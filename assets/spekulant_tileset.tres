@@ -1,0 +1,91 @@
+[gd_resource type="TileSet" format=3 uid="uid://smak4k6kjp7y"]
+
+[ext_resource type="Texture2D" uid="uid://dlk0nq3pvn1ym" path="res://assets/tileGroundGrass.png" id="1_fhvgs"]
+[ext_resource type="Texture2D" uid="uid://bptulrcgd1wh6" path="res://assets/tileGroundDirt.png" id="2_a328f"]
+[ext_resource type="Texture2D" uid="uid://vlj514jtlnju" path="res://assets/road06.png" id="3_ljbqx"]
+[ext_resource type="Texture2D" uid="uid://diwjwi4gtti6e" path="res://assets/sidewalkA.png" id="4_beehj"]
+[ext_resource type="Texture2D" uid="uid://b7pwiojq1sxx" path="res://assets/tileGroundConcrete.png" id="12_ujgnf"]
+[ext_resource type="Texture2D" uid="uid://cveouaoolfkyy" path="res://assets/tileGroundAsphalt.png" id="13_735hg"]
+[ext_resource type="Texture2D" uid="uid://qa17jrwm7yuh" path="res://assets/tileGroundWater.png" id="14_p3220"]
+[ext_resource type="Texture2D" uid="uid://dlgki6yhwu0f7" path="res://assets/road01.png" id="15_l4ppa"]
+[ext_resource type="Texture2D" uid="uid://dxqxnhjgenabj" path="res://assets/road02.png" id="16_edbjc"]
+[ext_resource type="Texture2D" uid="uid://1quxbyq14hm8" path="res://assets/road03.png" id="17_a0f6c"]
+[ext_resource type="Texture2D" uid="uid://ced6kegqdpryb" path="res://assets/road04.png" id="18_jsacy"]
+[ext_resource type="Texture2D" uid="uid://4y62fvlaydvv" path="res://assets/road05.png" id="19_dwibq"]
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_grass"]
+texture = ExtResource("1_fhvgs")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_dirt"]
+texture = ExtResource("2_a328f")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_road06"]
+texture = ExtResource("3_ljbqx")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_2hf7a"]
+texture = ExtResource("4_beehj")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_concrete"]
+texture = ExtResource("12_ujgnf")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_asphalt"]
+texture = ExtResource("13_735hg")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_water"]
+texture = ExtResource("14_p3220")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_road01"]
+texture = ExtResource("15_l4ppa")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_road02"]
+texture = ExtResource("16_edbjc")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_road03"]
+texture = ExtResource("17_a0f6c")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_road04"]
+texture = ExtResource("18_jsacy")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_road05"]
+texture = ExtResource("19_dwibq")
+texture_region_size = Vector2i(512, 256)
+0:0/0 = 0
+
+[resource]
+tile_shape = 1
+tile_layout = 4
+tile_size = Vector2i(512, 256)
+sources/0 = SubResource("TileSetAtlasSource_grass")
+sources/1 = SubResource("TileSetAtlasSource_dirt")
+sources/2 = SubResource("TileSetAtlasSource_concrete")
+sources/3 = SubResource("TileSetAtlasSource_asphalt")
+sources/4 = SubResource("TileSetAtlasSource_water")
+sources/5 = SubResource("TileSetAtlasSource_road01")
+sources/6 = SubResource("TileSetAtlasSource_road02")
+sources/7 = SubResource("TileSetAtlasSource_road03")
+sources/8 = SubResource("TileSetAtlasSource_road04")
+sources/9 = SubResource("TileSetAtlasSource_road05")
+sources/10 = SubResource("TileSetAtlasSource_road06")
+sources/11 = SubResource("TileSetAtlasSource_2hf7a")
