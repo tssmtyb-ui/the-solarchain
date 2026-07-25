@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://durcneaob0i6k"
-path="res://.godot/imported/warehouseBrownB.png-25f6de659a232af1e8ab7536e8b0600f.ctex"
+path="res://.godot/imported/warehouseBrownB.png-3c17cfb5e47682f197c586df48781072.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://factory/warehouseBrownB.png"
-dest_files=["res://.godot/imported/warehouseBrownB.png-25f6de659a232af1e8ab7536e8b0600f.ctex"]
+source_file="res://warehouse/warehouseBrownB.png"
+dest_files=["res://.godot/imported/warehouseBrownB.png-3c17cfb5e47682f197c586df48781072.ctex"]
 
 [params]
 

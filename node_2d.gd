@@ -1,5 +1,5 @@
 extends Node2D
-## Root scene script for Spekulant — Seed Hub Phase.
+## Root scene script for Spekulant.
 ##
 ## Owns the TileMapLayer, GridManager, and EconomyManager and bridges
 ## the data model to rendering, player input, and simulation.
@@ -8,6 +8,7 @@ extends Node2D
 @onready var _tilemap: TileMapLayer = $TileMapLayer
 @onready var _hover_layer: Node2D = $HoverLayer
 @onready var _economy: EconomyManager = _create_economy_manager()
+@onready var _money_label: Label = $UI/MoneyLabel
 
 
 ## Maps GridCellData.TileType → { source_id, atlas_coords } for TileSet lookup.
@@ -16,14 +17,12 @@ extends Node2D
 const TILE_TYPE_MAP: Dictionary = {
 	GridCellData.TileType.GRASS:      { "source_id": 0,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.DIRT:       { "source_id": 1,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.CONCRETE:   { "source_id": 2,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.ASPHALT:    { "source_id": 3,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.WATER:      { "source_id": 4,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.ROAD:       { "source_id": 5,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.ROAD_CROSS: { "source_id": 6,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.SIDEWALK:   { "source_id": 11, "coords": Vector2i(0, 0) },
-	GridCellData.TileType.SEED_HUB:   { "source_id": 2,  "coords": Vector2i(0, 0) }, # concrete ground
-	GridCellData.TileType.RESIDENTIAL: { "source_id": 2, "coords": Vector2i(0, 0) }, # concrete placeholder
+	GridCellData.TileType.RESIDENTIAL: { "source_id": 2, "coords": Vector2i(0, 0) },
 	GridCellData.TileType.INDUSTRIAL:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
 }
 
@@ -39,12 +38,21 @@ var _last_hovered_cell: Vector2i = Vector2i(-1, -1)
 ## The Sprite2D used for the mouse-hover highlight indicator.
 var _hover_sprite: Sprite2D = Sprite2D.new()
 
-## True once the player has placed their Seed Hub.
-var seed_hub_placed: bool = false
+## Sentinel value for the bulldoze tool (not a GridCellData tile type).
+const BULLDOZE: int = -1
 
-## The tile type the player is currently placing (via UI toggle).
-## Defaults to EMPTY = no tool selected.
+## Edge highway cells that are protected from bulldozing.
+const EDGE_HIGHWAY_CELLS: Array[Vector2i] = [
+	Vector2i(0, int(GRID_SIZE * 0.5)),
+	Vector2i(GRID_SIZE - 1, int(GRID_SIZE * 0.5)),
+]
+
+## The tool mode the player is currently using (via UI toggle).
+## EMPTY = no tool, BULLDOZE = demolition, otherwise a GridCellData.TileType.
 var current_build_mode: int = GridCellData.TileType.EMPTY
+
+## Player's current money balance.
+var current_money: int = 1000
 
 
 func _ready() -> void:
@@ -68,15 +76,28 @@ func _ready() -> void:
 
 	# Connect UI toggle buttons for build modes.
 	var road_toggle: TextureButton = $UI/RoadToggle
+	road_toggle.tooltip_text = "Build Road"
 	road_toggle.toggled.connect(_on_road_toggle_toggled)
 
 	var factory_toggle: TextureButton = $UI/FactoryToggle
+	factory_toggle.tooltip_text = "Build Factory"
 	factory_toggle.toggled.connect(_on_factory_toggle_toggled)
 
-	# --- Initialise a clean GRASS map ---
-	_init_grass_grid()
+	var bulldoze_toggle: TextureButton = $UI/BulldozeToggle
+	bulldoze_toggle.tooltip_text = "Bulldozer (Demolish)"
+	bulldoze_toggle.toggled.connect(_on_bulldoze_toggle_toggled)
 
-	prints("Seed Hub phase ready. Click any grass tile to place the Seed Hub.")
+	# --- Initialise a clean GRASS map with edge highway connections ---
+	_init_grass_grid()
+	_spawn_edge_highways()
+
+	# Start the economy immediately (timer auto-starts in EconomyManager._ready()).
+	_economy.set_flat_rate(0.15)
+	_economy.calculate_all()
+
+	update_money_ui()
+
+	prints("World initialised — place roads and factories freely.")
 
 
 ## Fills the grid with uniform GRASS tiles — the player's blank canvas.
@@ -86,6 +107,23 @@ func _init_grass_grid() -> void:
 			var cell := Vector2i(x, y)
 			_grid.set_tile(cell, GridCellData.new(GridCellData.TileType.GRASS))
 			_place_tile(cell, GridCellData.TileType.GRASS)
+
+
+## Places ROAD tiles at the east and west edges of the grid as highway connections.
+## West gateway: (0, GRID_SIZE / 2)    East gateway: (GRID_SIZE - 1, GRID_SIZE / 2)
+## These are written to both the grid data model and the TileMapLayer.
+func _spawn_edge_highways() -> void:
+	var mid_y: int = int(GRID_SIZE * 0.5)
+
+	var west_cell := Vector2i(0, mid_y)
+	_grid.set_tile(west_cell, GridCellData.new(GridCellData.TileType.ROAD))
+	_place_tile(west_cell, GridCellData.TileType.ROAD)
+
+	var east_cell := Vector2i(GRID_SIZE - 1, mid_y)
+	_grid.set_tile(east_cell, GridCellData.new(GridCellData.TileType.ROAD))
+	_place_tile(east_cell, GridCellData.TileType.ROAD)
+
+	prints("Edge highways placed at", west_cell, "and", east_cell)
 
 
 ## Returns true if `pos` lies within the GRID_SIZE × GRID_SIZE map bounds.
@@ -115,50 +153,30 @@ func _process(_delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Keyboard shortcut: press H to place hub at centre (for testing).
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_H:
-		var centre := Vector2i(GRID_SIZE / 2.0, GRID_SIZE / 2.0)
-		if not seed_hub_placed and _grid.get_tile_type(centre) == GridCellData.TileType.GRASS:
-			_try_place_seed_hub(centre)
-		return
-
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 
 	var grid_pos: Vector2i = _tilemap.local_to_map(get_global_mouse_position())
 
-	# Bounds check — ignore clicks outside the starting map.
 	if grid_pos.x < 0 or grid_pos.x >= GRID_SIZE or grid_pos.y < 0 or grid_pos.y >= GRID_SIZE:
 		return
 
-	if not seed_hub_placed:
-		_try_place_seed_hub(grid_pos)
-		return
-
-	# --- Seed Hub is placed: use the current build mode ---
 	if current_build_mode == GridCellData.TileType.EMPTY:
 		prints("No tool selected — toggle Road or Factory button first.")
 		return
 
-	# Prevent overwriting the hub or its concrete platform (let's keep it safe).
 	var existing: int = _grid.get_tile_type(grid_pos)
-	if existing == GridCellData.TileType.SEED_HUB or existing == GridCellData.TileType.CONCRETE:
-		prints("Cannot build on the Seed Hub platform.")
-		return
-
-	# Double-billing guard: silently skip if the tile is already of the requested type.
 	if existing == current_build_mode:
 		return
 
-	# "Next to a road" rule + spacing rule for factories.
+	if current_build_mode == GridCellData.TileType.ROAD or current_build_mode == GridCellData.TileType.ROAD_CROSS:
+		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
+		_place_tile(grid_pos, current_build_mode)
+		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+		return
+
 	if current_build_mode == GridCellData.TileType.INDUSTRIAL:
 		var cardinal: Array[Vector2i] = [Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0)]
-		var all_8: Array[Vector2i] = [
-			Vector2i(-1, -1), Vector2i(0, -1), Vector2i(1, -1),
-			Vector2i(-1,  0),                   Vector2i(1,  0),
-			Vector2i(-1,  1), Vector2i(0,  1), Vector2i(1,  1),
-		]
-		# Rule A: must be adjacent (cardinal) to a road.
 		var found_road := false
 		for off in cardinal:
 			var adj: Vector2i = Vector2i(grid_pos.x + off.x, grid_pos.y + off.y)
@@ -171,63 +189,42 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not found_road:
 			prints("Blocked: Factories must be built next to a road!")
 			return
+		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
+		_place_tile(grid_pos, current_build_mode)
+		_spawn_building_sprite(grid_pos, current_build_mode)
+		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+		return
 
-		# Rule B: cannot be within 1 tile (8-dir) of another factory.
-		for off in all_8:
-			var adj: Vector2i = Vector2i(grid_pos.x + off.x, grid_pos.y + off.y)
-			if not _within_bounds(adj):
-				continue
-			if _grid.get_tile_type(adj) == GridCellData.TileType.INDUSTRIAL:
-				prints("Blocked: Factories cannot be adjacent to each other!")
-				return
+	# --- Bulldoze: demolish player-built tiles back to grass ---
+	if current_build_mode == BULLDOZE:
+		if EDGE_HIGHWAY_CELLS.has(grid_pos):
+			prints("Cannot demolish edge highway connection.")
+			return
 
-	# Place the selected tile type.
+		if existing == GridCellData.TileType.ROAD \
+		   or existing == GridCellData.TileType.ROAD_CROSS \
+		   or existing == GridCellData.TileType.INDUSTRIAL:
+			# Destroy any building sprite attached to this tile.
+			if _building_sprites.has(grid_pos):
+				var sprite: Node = _building_sprites[grid_pos] as Node
+				if is_instance_valid(sprite):
+					sprite.queue_free()
+				_building_sprites.erase(grid_pos)
+
+			# Reset the tile to grass in data model + tilemap.
+			_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
+			_place_tile(grid_pos, GridCellData.TileType.GRASS)
+			prints("Demolished", GridCellData.TileType.keys()[existing], "at", grid_pos)
+		else:
+			prints("Nothing to demolish at", grid_pos)
+		return
+
 	_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
 	_place_tile(grid_pos, current_build_mode)
-	_spawn_building_sprite(grid_pos, current_build_mode)
 	prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
 
 
-## Attempts to place the Seed Hub at the given grid cell.
-## Only valid on GRASS tiles.
-func _try_place_seed_hub(pos: Vector2i) -> void:
-	if _grid.get_tile_type(pos) != GridCellData.TileType.GRASS:
-		prints("Seed Hub can only be placed on grass.")
-		return
 
-	# Place the Seed Hub.
-	_grid.set_tile(pos, GridCellData.new(GridCellData.TileType.SEED_HUB))
-	_place_tile(pos, GridCellData.TileType.SEED_HUB)
-
-	# Radiate +100 land value in a 3×3 radius around the hub.
-	_radiate_land_value(pos)
-
-	seed_hub_placed = true
-	prints("Seed Hub placed at", pos, "— economy bootstrapped.")
-
-	# Start the economy simulation.
-	_economy.set_flat_rate(0.15)
-	_economy.calculate_all()
-
-
-## Radiate +100 land value in a 3×3 radius around `center`.
-## Converts the 8 adjacent grass tiles to CONCRETE (developed platform)
-## and sets their land_value_modifier to 100.0 so the economy has
-## something taxable to work with immediately.
-func _radiate_land_value(center: Vector2i) -> void:
-	for dx in range(-1, 2):
-		for dy in range(-1, 2):
-			var neighbor := Vector2i(center.x + dx, center.y + dy)
-			# Skip out-of-bounds.
-			if neighbor.x < 0 or neighbor.x >= GRID_SIZE or neighbor.y < 0 or neighbor.y >= GRID_SIZE:
-				continue
-			# Skip the hub tile itself.
-			if neighbor == center:
-				continue
-			# Upgrade the tile to CONCRETE (developed platform) + land value boost.
-			var cell_data := GridCellData.new(GridCellData.TileType.CONCRETE, 100.0)
-			_grid.set_tile(neighbor, cell_data)
-			_place_tile(neighbor, GridCellData.TileType.CONCRETE)
 
 
 ## Called when the Road toggle button is switched on/off.
@@ -238,6 +235,8 @@ func _on_road_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.ROAD
 		btn.texture_normal = preload("res://Ui/Switch01.png")
+		$UI/BulldozeToggle.set_pressed_no_signal(false)
+		$UI/FactoryToggle.set_pressed_no_signal(false)
 		prints("Build mode: ROAD")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -253,6 +252,8 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.INDUSTRIAL
 		btn.texture_normal = preload("res://assets/generated/factory_toggle_icon_2_frame_0.png")
+		$UI/RoadToggle.set_pressed_no_signal(false)
+		$UI/BulldozeToggle.set_pressed_no_signal(false)
 		prints("Build mode: INDUSTRIAL")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -260,8 +261,31 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 		prints("Build mode: OFF")
 
 
+## Called when the Bulldoze toggle button is switched on/off.
+## ON  → set build mode to BULLDOZE, show Switch01 (active).
+## OFF → reset build mode to EMPTY, show Switch02 (inactive).
+## Unpresses Road and Factory toggles when activated (mutual exclusion).
+func _on_bulldoze_toggle_toggled(toggled_on: bool) -> void:
+	var btn: TextureButton = $UI/BulldozeToggle
+	if toggled_on:
+		current_build_mode = BULLDOZE
+		btn.texture_normal = preload("res://Ui/Switch01.png")
+		$UI/RoadToggle.set_pressed_no_signal(false)
+		$UI/FactoryToggle.set_pressed_no_signal(false)
+		prints("Build mode: BULLDOZE")
+	else:
+		current_build_mode = GridCellData.TileType.EMPTY
+		btn.texture_normal = preload("res://Ui/Switch02.png")
+		prints("Build mode: OFF")
+
+
 func _on_assessment_completed(total: float, count: int) -> void:
 	prints("Assessment: tiles:", count, "revenue: $", snapped(total, 0.01))
+
+
+## Updates the money label to reflect the current balance.
+func update_money_ui() -> void:
+	_money_label.text = "$%d" % current_money
 
 
 # ---- Bootstrap helper -------------------------------------------------------
@@ -281,14 +305,18 @@ func _create_economy_manager() -> EconomyManager:
 ## Allows cleanup when a tile is replaced with a different type.
 var _building_sprites: Dictionary = {}
 
-## Preload warehouse textures for factory building visuals.
-const WAREHOUSE_A: Texture2D = preload("res://assets/generated/isometric_warehouse_frame_0.png")
-const WAREHOUSE_B: Texture2D = preload("res://assets/generated/isometric_warehouse_v2_frame_0.png")
+## Preload the two factory building textures (used for INDUSTRIAL tiles).
+const FACTORY_A: Texture2D = preload("res://factory/buildingSmallRedA.png")
+const FACTORY_B: Texture2D = preload("res://factory/buildingSmallRedB.png")
 
 
-## Spawns (or replaces) a building Sprite2D for the given tile type at the cell.
-## Only supported tile types (INDUSTRIAL) get a visual sprite overlay.
-## All math assumes a 512×256 isometric diamond tile.
+## Spawns (or replaces) a building Sprite2D overlay for the given tile type.
+##
+## All math assumes a 512×256 isometric diamond tile (Diamond Right layout).
+## The building's visual base (texture bottom edge) is pinned to the diamond
+## bottom tip (ground plane) so the structure rests on the tile surface.
+## Y-sort happens at diamond_centre.y so tiles in front
+## (south, higher Y) render on top of the building's lower portion.
 func _spawn_building_sprite(cell: Vector2i, tile_type: int) -> void:
 	# Remove any existing sprite at this cell first.
 	if _building_sprites.has(cell):
@@ -301,12 +329,12 @@ func _spawn_building_sprite(cell: Vector2i, tile_type: int) -> void:
 	var tex: Texture2D
 	match tile_type:
 		GridCellData.TileType.INDUSTRIAL:
-			# Alternate between A (64×64) and B (96×96) for visual variety.
-			tex = WAREHOUSE_A if (cell.x + cell.y) % 2 == 0 else WAREHOUSE_B
+			# Random pick between the two variants for visual variety.
+			tex = FACTORY_A if randi() % 2 == 0 else FACTORY_B
 		_:
 			return  # No building sprite for other tile types.
 
-	# Create the sprite, centered on the isometric tile.
+	# Create the sprite, centered (so position = centre of the sprite rect).
 	var sprite := Sprite2D.new()
 	sprite.texture = tex
 	sprite.centered = true
@@ -314,26 +342,23 @@ func _spawn_building_sprite(cell: Vector2i, tile_type: int) -> void:
 	sprite.z_index = 0
 	sprite.y_sort_enabled = true
 
-	# Scale so the building fills about 75% of the 512 px diamond width.
+	# Scale so the building fills ~75 % of the 512 px diamond width.
 	var tex_size: Vector2 = tex.get_size()
-	var target_width: float = 384.0  # 75% of 512
+	var target_width: float = 384.0
 	var s: float = target_width / tex_size.x
 	sprite.scale = Vector2(s, s)
 
-	# Position one pixel above the diamond bottom tip for correct y-sort.
-	# Diamond bottom = centre_y + tile_h/2 = centre_y + 128
-	# We sort at bottom - 1 so the tile in front renders on top.
+	# Position at diamond centre so y-sort aligns with the tile's vertical midpoint.
+	# Tiles in front (south, higher Y) sort after us and render on top.
 	var diamond_centre: Vector2 = _tilemap.map_to_local(cell)
-	var diamond_bottom_y: float = diamond_centre.y + 128.0
-	sprite.position = Vector2(diamond_centre.x, diamond_bottom_y - 1.0)
+	sprite.position = diamond_centre
 
-	# Offset the sprite centre so the scaled texture's bottom edge lands
-	# a few pixels past the diamond bottom (padding for shadow/transparency).
-	# sprite.position.y = diamond_bottom_y - 1
-	# sprite.position.y + offset_y + tex_h/2 * s = diamond_bottom_y + padding
-	#     → offset_y = 1 + padding - tex_h/2 * s
-	var padding: float = 4.0  # small gap for shadow rows at bottom of sprite
-	var offset_y: float = 1.0 + padding - (tex_size.y * 0.5 * s)
+	# Offset the sprite centre so the scaled texture's bottom edge sits exactly
+	# at the diamond bottom tip (ground plane), 128 px below diamond_centre.y.
+	# With centered = true:
+	#   centre_y + offset_y + tex_h/2 * s = diamond_centre.y + 128
+	#   → offset_y = 128 - tex_h/2 * s
+	var offset_y: float = 128.0 - (tex_size.y * 0.5 * s)
 	sprite.offset = Vector2(0, offset_y)
 
 	_tilemap.add_child(sprite)
