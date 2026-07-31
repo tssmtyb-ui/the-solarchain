@@ -22,8 +22,10 @@ const TILE_TYPE_MAP: Dictionary = {
 	GridCellData.TileType.ROAD:       { "source_id": 5,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.ROAD_CROSS: { "source_id": 6,  "coords": Vector2i(0, 0) },
 	GridCellData.TileType.SIDEWALK:   { "source_id": 11, "coords": Vector2i(0, 0) },
-	GridCellData.TileType.RESIDENTIAL: { "source_id": 2, "coords": Vector2i(0, 0) },
+	GridCellData.TileType.RESIDENTIAL_LOW: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
+	GridCellData.TileType.RESIDENTIAL_HIGH: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
 	GridCellData.TileType.INDUSTRIAL:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
+	GridCellData.TileType.WAREHOUSE:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
 }
 
 ## Grid dimensions for the starting map.
@@ -40,6 +42,40 @@ var _hover_sprite: Sprite2D = Sprite2D.new()
 
 ## Sentinel value for the bulldoze tool (not a GridCellData tile type).
 const BULLDOZE: int = -1
+
+## Build costs deducted from current_money when placing tiles.
+const ROAD_COST: int = 10
+const FACTORY_COST: int = 100
+const WAREHOUSE_COST: int = 60
+const RESIDENTIAL_COST: int = 50
+const UPGRADE_COST: int = 150
+
+## Per-cycle tile economics (applied in _on_assessment_completed).
+const ROAD_UPKEEP: int = 1
+
+## Land Value Tax constants.
+## A tile's economic value is determined by its Manhattan distance to the
+## nearest edge highway (outside world connection). Values drop by LVT_DROP_OFF
+## per tile of distance away from the highway, never below MIN_LAND_VALUE.
+const MAX_LAND_VALUE: int = 50
+const LVT_DROP_OFF: int = 3
+const MIN_LAND_VALUE: int = 5
+
+## Maximum land value a low-density villa can afford before being priced out.
+## Villas on land worth more than this provide 0 workers and 0 tax income.
+const MAX_VILLA_LAND_VALUE: int = 30
+
+## Worker radius constants for the factory labour dependency loop.
+## Factories scan for nearby housing within this Manhattan distance.
+const WORKER_RADIUS: int = 3
+## Workers required for a factory to operate at full efficiency.
+const REQUIRED_WORKERS: int = 2
+
+## Background-music tracks played in a continuous sequential loop.
+const MUSIC_TRACKS: Array[AudioStream] = [
+	preload("res://music/bensound-thejazzpiano.mp3"),
+	preload("res://music/bensound-jazzcomedy.mp3"),
+]
 
 ## Edge highway cells that are protected from bulldozing.
 const EDGE_HIGHWAY_CELLS: Array[Vector2i] = [
@@ -83,6 +119,14 @@ func _ready() -> void:
 	factory_toggle.tooltip_text = "Build Factory"
 	factory_toggle.toggled.connect(_on_factory_toggle_toggled)
 
+	var warehouse_toggle: TextureButton = $UI/WarehouseToggle
+	warehouse_toggle.tooltip_text = "Build Warehouse"
+	warehouse_toggle.toggled.connect(_on_warehouse_toggle_toggled)
+
+	var residential_toggle: TextureButton = $UI/ResidentialToggle
+	residential_toggle.tooltip_text = "Build Residential"
+	residential_toggle.toggled.connect(_on_residential_toggle_toggled)
+
 	var bulldoze_toggle: TextureButton = $UI/BulldozeToggle
 	bulldoze_toggle.tooltip_text = "Bulldozer (Demolish)"
 	bulldoze_toggle.toggled.connect(_on_bulldoze_toggle_toggled)
@@ -94,6 +138,9 @@ func _ready() -> void:
 	# Start the economy immediately (timer auto-starts in EconomyManager._ready()).
 	_economy.set_flat_rate(0.15)
 	_economy.calculate_all()
+
+	# --- Start background music (sequential looping playlist) ---
+	_setup_music()
 
 	update_money_ui()
 
@@ -166,10 +213,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 
 	var existing: int = _grid.get_tile_type(grid_pos)
-	if existing == current_build_mode:
+	if existing == current_build_mode and current_build_mode != GridCellData.TileType.RESIDENTIAL_LOW:
 		return
 
 	if current_build_mode == GridCellData.TileType.ROAD or current_build_mode == GridCellData.TileType.ROAD_CROSS:
+		if current_money < ROAD_COST:
+			prints("Not enough money!")
+			return
+		current_money -= ROAD_COST
+		update_money_ui()
 		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
 		_place_tile(grid_pos, current_build_mode)
 		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
@@ -189,6 +241,62 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not found_road:
 			prints("Blocked: Factories must be built next to a road!")
 			return
+		if current_money < FACTORY_COST:
+			prints("Not enough money!")
+			return
+		current_money -= FACTORY_COST
+		update_money_ui()
+		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
+		_place_tile(grid_pos, current_build_mode)
+		_spawn_building_sprite(grid_pos, current_build_mode)
+		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+		return
+
+	if current_build_mode == GridCellData.TileType.WAREHOUSE:
+		var cardinal: Array[Vector2i] = [Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0)]
+		var found_road := false
+		for off in cardinal:
+			var adj: Vector2i = Vector2i(grid_pos.x + off.x, grid_pos.y + off.y)
+			if not _within_bounds(adj):
+				continue
+			var adj_type: int = _grid.get_tile_type(adj)
+			if adj_type == GridCellData.TileType.ROAD or adj_type == GridCellData.TileType.ROAD_CROSS:
+				found_road = true
+				break
+		if not found_road:
+			prints("Blocked: Warehouses must be built next to a road!")
+			return
+		if current_money < WAREHOUSE_COST:
+			prints("Not enough money!")
+			return
+		current_money -= WAREHOUSE_COST
+		update_money_ui()
+		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
+		_place_tile(grid_pos, current_build_mode)
+		_spawn_building_sprite(grid_pos, current_build_mode)
+		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+		return
+
+	if current_build_mode == GridCellData.TileType.RESIDENTIAL_LOW:
+		# Upgrade: clicking on an existing house upgrades it to an apartment.
+		if existing == GridCellData.TileType.RESIDENTIAL_LOW:
+			if current_money < UPGRADE_COST:
+				prints("Not enough money for upgrade!")
+				return
+			current_money -= UPGRADE_COST
+			update_money_ui()
+			_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.RESIDENTIAL_HIGH))
+			_place_tile(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
+			_spawn_building_sprite(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
+			prints("Upgraded to RESIDENTIAL_HIGH at", grid_pos)
+			return
+
+		# Normal house placement on any non-residential tile.
+		if current_money < RESIDENTIAL_COST:
+			prints("Not enough money!")
+			return
+		current_money -= RESIDENTIAL_COST
+		update_money_ui()
 		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
 		_place_tile(grid_pos, current_build_mode)
 		_spawn_building_sprite(grid_pos, current_build_mode)
@@ -203,7 +311,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 		if existing == GridCellData.TileType.ROAD \
 		   or existing == GridCellData.TileType.ROAD_CROSS \
-		   or existing == GridCellData.TileType.INDUSTRIAL:
+		   or existing == GridCellData.TileType.INDUSTRIAL \
+		   or existing == GridCellData.TileType.WAREHOUSE \
+		   or existing == GridCellData.TileType.RESIDENTIAL_LOW \
+		   or existing == GridCellData.TileType.RESIDENTIAL_HIGH:
 			# Destroy any building sprite attached to this tile.
 			if _building_sprites.has(grid_pos):
 				var sprite: Node = _building_sprites[grid_pos] as Node
@@ -237,6 +348,8 @@ func _on_road_toggle_toggled(toggled_on: bool) -> void:
 		btn.texture_normal = preload("res://Ui/Switch01.png")
 		$UI/BulldozeToggle.set_pressed_no_signal(false)
 		$UI/FactoryToggle.set_pressed_no_signal(false)
+		$UI/WarehouseToggle.set_pressed_no_signal(false)
+		$UI/ResidentialToggle.set_pressed_no_signal(false)
 		prints("Build mode: ROAD")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -253,11 +366,45 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 		current_build_mode = GridCellData.TileType.INDUSTRIAL
 		btn.texture_normal = preload("res://assets/generated/factory_toggle_icon_2_frame_0.png")
 		$UI/RoadToggle.set_pressed_no_signal(false)
+		$UI/WarehouseToggle.set_pressed_no_signal(false)
+		$UI/ResidentialToggle.set_pressed_no_signal(false)
 		$UI/BulldozeToggle.set_pressed_no_signal(false)
 		prints("Build mode: INDUSTRIAL")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
 		btn.texture_normal = preload("res://assets/generated/factory_toggle_icon_frame_0.png")
+		prints("Build mode: OFF")
+
+
+## Called when the Warehouse toggle button is switched on/off.
+## ON  → set build mode to WAREHOUSE.
+## OFF → reset build mode to EMPTY.
+func _on_warehouse_toggle_toggled(toggled_on: bool) -> void:
+	if toggled_on:
+		current_build_mode = GridCellData.TileType.WAREHOUSE
+		$UI/RoadToggle.set_pressed_no_signal(false)
+		$UI/FactoryToggle.set_pressed_no_signal(false)
+		$UI/ResidentialToggle.set_pressed_no_signal(false)
+		$UI/BulldozeToggle.set_pressed_no_signal(false)
+		prints("Build mode: WAREHOUSE")
+	else:
+		current_build_mode = GridCellData.TileType.EMPTY
+		prints("Build mode: OFF")
+
+
+## Called when the Residential toggle button is switched on/off.
+## ON  → set build mode to RESIDENTIAL_LOW.
+## OFF → reset build mode to EMPTY.
+func _on_residential_toggle_toggled(toggled_on: bool) -> void:
+	if toggled_on:
+		current_build_mode = GridCellData.TileType.RESIDENTIAL_LOW
+		$UI/RoadToggle.set_pressed_no_signal(false)
+		$UI/FactoryToggle.set_pressed_no_signal(false)
+		$UI/WarehouseToggle.set_pressed_no_signal(false)
+		$UI/BulldozeToggle.set_pressed_no_signal(false)
+		prints("Build mode: RESIDENTIAL_LOW")
+	else:
+		current_build_mode = GridCellData.TileType.EMPTY
 		prints("Build mode: OFF")
 
 
@@ -272,6 +419,8 @@ func _on_bulldoze_toggle_toggled(toggled_on: bool) -> void:
 		btn.texture_normal = preload("res://Ui/Switch01.png")
 		$UI/RoadToggle.set_pressed_no_signal(false)
 		$UI/FactoryToggle.set_pressed_no_signal(false)
+		$UI/WarehouseToggle.set_pressed_no_signal(false)
+		$UI/ResidentialToggle.set_pressed_no_signal(false)
 		prints("Build mode: BULLDOZE")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -279,8 +428,84 @@ func _on_bulldoze_toggle_toggled(toggled_on: bool) -> void:
 		prints("Build mode: OFF")
 
 
+## Returns the Land Value of a grid position based on Manhattan distance to the
+## nearest edge highway (outside-world connection).
+##
+## Tiles closer to the highway fetch a higher value; remote land drops toward
+## MIN_LAND_VALUE. The formula: MAX_LAND_VALUE - (shortest_distance * LVT_DROP_OFF),
+## clamped to never go below MIN_LAND_VALUE.
+func get_land_value(grid_pos: Vector2i) -> int:
+	var mid_y: int = int(GRID_SIZE * 0.5)
+
+	var west := Vector2i(0, mid_y)
+	var east := Vector2i(GRID_SIZE - 1, mid_y)
+
+	var dist_west: int = abs(grid_pos.x - west.x) + abs(grid_pos.y - west.y)
+	var dist_east: int = abs(grid_pos.x - east.x) + abs(grid_pos.y - east.y)
+	var shortest: int = mini(dist_west, dist_east)
+
+	var raw: int = MAX_LAND_VALUE - (shortest * LVT_DROP_OFF)
+	return clampi(raw, MIN_LAND_VALUE, MAX_LAND_VALUE)
+
+
+## Scans within WORKER_RADIUS of a factory position and counts nearby workers.
+## RESIDENTIAL_LOW tiles contribute 1 worker, RESIDENTIAL_HIGH tiles contribute 3.
+## Uses Manhattan distance (abs(dx) + abs(dy) <= WORKER_RADIUS) for the scan.
+func _get_local_workers(factory_pos: Vector2i) -> int:
+	var count: int = 0
+	for dx in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
+		for dy in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
+			if abs(dx) + abs(dy) > WORKER_RADIUS:
+				continue
+			var pos: Vector2i = Vector2i(factory_pos.x + dx, factory_pos.y + dy)
+			if pos.x < 0 or pos.x >= GRID_SIZE or pos.y < 0 or pos.y >= GRID_SIZE:
+				continue
+			var tile_type: int = _grid.get_tile_type(pos)
+			if tile_type == GridCellData.TileType.RESIDENTIAL_LOW:
+				# Villa is priced out if land value exceeds the threshold.
+				if get_land_value(pos) > MAX_VILLA_LAND_VALUE:
+					prints("Villa at", pos, "abandoned! Land value too high.")
+				else:
+					count += 1
+			elif tile_type == GridCellData.TileType.RESIDENTIAL_HIGH:
+				count += 3
+	return count
+
+
 func _on_assessment_completed(total: float, count: int) -> void:
-	prints("Assessment: tiles:", count, "revenue: $", snapped(total, 0.01))
+	# Count placed tile types from the grid data model.
+	var road_count: int = 0
+	var income: int = 0
+
+	for pos in _grid.get_all_occupied_positions():
+		var t: int = _grid.get_tile_type(pos)
+		if t == GridCellData.TileType.ROAD or t == GridCellData.TileType.ROAD_CROSS:
+			road_count += 1
+		elif t == GridCellData.TileType.INDUSTRIAL:
+			# Factories need workers to generate income.
+			if _get_local_workers(pos) >= REQUIRED_WORKERS:
+				income += get_land_value(pos)
+			else:
+				prints("Factory at", pos, "is idle! Not enough workers.")
+		elif t == GridCellData.TileType.WAREHOUSE:
+			income += get_land_value(pos)
+		elif t == GridCellData.TileType.RESIDENTIAL_LOW:
+			var lv: int = get_land_value(pos)
+			if lv <= MAX_VILLA_LAND_VALUE:
+				income += lv
+			else:
+				prints("RESIDENTIAL_LOW at", pos, "pays $0 — land value too high.")
+		elif t == GridCellData.TileType.RESIDENTIAL_HIGH:
+			# High-density captures double the land value.
+			income += get_land_value(pos) * 2
+
+	var upkeep: int = road_count * ROAD_UPKEEP
+	var net: int = income - upkeep
+
+	current_money += net
+	update_money_ui()
+	prints("Assessment: tiles:", count, "revenue: $", snapped(total, 0.01),
+		" roads:", road_count, " income:+$", income, " upkeep:-$", upkeep, " net:", net)
 
 
 ## Updates the money label to reflect the current balance.
@@ -305,9 +530,19 @@ func _create_economy_manager() -> EconomyManager:
 ## Allows cleanup when a tile is replaced with a different type.
 var _building_sprites: Dictionary = {}
 
-## Preload the two factory building textures (used for INDUSTRIAL tiles).
-const FACTORY_A: Texture2D = preload("res://factory/buildingSmallRedA.png")
-const FACTORY_B: Texture2D = preload("res://factory/buildingSmallRedB.png")
+## Preload the factory building texture (used for INDUSTRIAL tiles).
+const FACTORY: Texture2D = preload("res://assets/factory/FactoryC.png")
+
+## Preload the warehouse building texture (used for WAREHOUSE tiles).
+const WAREHOUSE: Texture2D = preload("res://assets/warehouse/warehouseBrownA.png")
+
+## Preload the house building textures (randomly picked for RESIDENTIAL_LOW tiles).
+const HOUSE_A: Texture2D = preload("res://assets/House/houseSmallBlueA.png")
+const HOUSE_B: Texture2D = preload("res://assets/House/houseSmallBlueB.png")
+
+## Preload the apartment building textures (randomly picked for RESIDENTIAL_HIGH tiles).
+const APARTMENT_A: Texture2D = preload("res://assets/Apartment/buildingTallOrangeA.png")
+const APARTMENT_B: Texture2D = preload("res://assets/Apartment/buildingTallOrangeB.png")
 
 
 ## Spawns (or replaces) a building Sprite2D overlay for the given tile type.
@@ -329,8 +564,13 @@ func _spawn_building_sprite(cell: Vector2i, tile_type: int) -> void:
 	var tex: Texture2D
 	match tile_type:
 		GridCellData.TileType.INDUSTRIAL:
-			# Random pick between the two variants for visual variety.
-			tex = FACTORY_A if randi() % 2 == 0 else FACTORY_B
+			tex = FACTORY
+		GridCellData.TileType.WAREHOUSE:
+			tex = WAREHOUSE
+		GridCellData.TileType.RESIDENTIAL_LOW:
+			tex = HOUSE_A if randi() % 2 == 0 else HOUSE_B
+		GridCellData.TileType.RESIDENTIAL_HIGH:
+			tex = APARTMENT_A if randi() % 2 == 0 else APARTMENT_B
 		_:
 			return  # No building sprite for other tile types.
 
@@ -363,6 +603,36 @@ func _spawn_building_sprite(cell: Vector2i, tile_type: int) -> void:
 
 	_tilemap.add_child(sprite)
 	_building_sprites[cell] = sprite
+
+
+## Background-music state.
+var _music_player: AudioStreamPlayer
+var _music_index: int = 0
+
+
+## Sets up an AudioStreamPlayer child for background music and starts playback.
+## Tracks play sequentially in a never-ending loop via the finished signal.
+func _setup_music() -> void:
+	_music_player = AudioStreamPlayer.new()
+	_music_player.name = "MusicPlayer"
+	_music_player.volume_db = -6.0
+	_music_player.bus = "Master"
+	_music_player.finished.connect(_on_music_track_ended)
+	add_child(_music_player)
+	_play_music_track(0)
+
+
+func _play_music_track(index: int) -> void:
+	_music_index = index
+	_music_player.stream = MUSIC_TRACKS[index]
+	_music_player.volume_db = 0.0
+	_music_player.play()
+	prints("MusicManager: playing track", index)
+
+
+func _on_music_track_ended() -> void:
+	var next: int = (_music_index + 1) % MUSIC_TRACKS.size()
+	_play_music_track(next)
 
 
 ## Look up the TileSet source/coords for a GridCellData tile type and place it.

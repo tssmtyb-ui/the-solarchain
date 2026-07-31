@@ -8,7 +8,7 @@
 
 config_version=5
 
-autoload="{\"GridManager\": \"*res://scripts/grid/grid_manager.gd\"}"
+autoload="{\"GridManager\": \"*res://scripts/grid/grid_manager.gd\", \"MusicManager\": \"*res://music/music_manager.gd\"}"
 
 [application]
 

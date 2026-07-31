@@ -8,6 +8,8 @@
 [ext_resource type="Texture2D" uid="uid://bf3pjtvfgemr1" path="res://Ui/Switch02.png" id="6_ewfj5"]
 [ext_resource type="Texture2D" uid="uid://b7gc7q2mjqx1e" path="res://assets/generated/factory_toggle_icon_frame_0.png" id="7_tdzgp"]
 [ext_resource type="Texture2D" uid="uid://cst5np6l6lksa" path="res://assets/generated/factory_toggle_icon_2_frame_0.png" id="8_rqwuh"]
+[ext_resource type="Script" uid="uid://bj1vpfanb80e8" path="res://scripts/ui/music_attribution.gd" id="9_g4qxb"]
+[ext_resource type="Texture2D" uid="uid://csvurd8y1u8vy" path="res://assets/warehouse/warehouseBrownA.png" id="9_ir8iy"]
 
 [sub_resource type="ButtonGroup" id="ButtonGroup_z3u88"]
 
@@ -50,13 +52,39 @@ texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
 
 [node name="FactoryToggle" type="TextureButton" parent="UI" unique_id=1180538835]
-offset_top = 30.0
-offset_right = 66.0
-offset_bottom = 54.0
+offset_left = 1.0
+offset_top = 46.0
+offset_right = 67.0
+offset_bottom = 110.0
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("7_tdzgp")
 texture_pressed = ExtResource("8_rqwuh")
+
+[node name="ResidentialToggle" type="TextureButton" parent="UI" unique_id=282726002]
+offset_left = 1.0
+offset_top = 199.0
+offset_right = 67.0
+offset_bottom = 223.0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("6_ewfj5")
+texture_pressed = ExtResource("5_jq64y")
+
+[node name="WarehouseToggle" type="TextureButton" parent="UI" unique_id=282726001]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -66.0
+offset_top = 30.0
+offset_bottom = 98.0
+grow_horizontal = 0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("9_ir8iy")
+texture_pressed = ExtResource("9_ir8iy")
+ignore_texture_size = true
+stretch_mode = 1
 
 [node name="BulldozeToggle" type="TextureButton" parent="UI" unique_id=1018431014]
 offset_top = 134.0
@@ -66,3 +94,13 @@ toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
+
+[node name="MusicAttribution" type="Label" parent="UI" unique_id=1598675489]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -32.0
+offset_right = 600.0
+offset_bottom = -8.0
+script = ExtResource("9_g4qxb")

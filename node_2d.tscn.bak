@@ -1,0 +1,68 @@
+[gd_scene format=3 uid="uid://bnxatm1re0ymo"]
+
+[ext_resource type="Script" uid="uid://cb6gmn75lx7k1" path="res://node_2d.gd" id="1_wtcfe"]
+[ext_resource type="Script" uid="uid://cuqeft2e178fm" path="res://scripts/grid/grid_manager.gd" id="2_8mhqk"]
+[ext_resource type="TileSet" uid="uid://smak4k6kjp7y" path="res://assets/spekulant_tileset.tres" id="3_3l29c"]
+[ext_resource type="Script" uid="uid://dqudj1jhyt70u" path="res://camera_2d.gd" id="4_0hol4"]
+[ext_resource type="Texture2D" uid="uid://bk28x3us36jm4" path="res://Ui/Switch01.png" id="5_jq64y"]
+[ext_resource type="Texture2D" uid="uid://bf3pjtvfgemr1" path="res://Ui/Switch02.png" id="6_ewfj5"]
+[ext_resource type="Texture2D" uid="uid://b7gc7q2mjqx1e" path="res://assets/generated/factory_toggle_icon_frame_0.png" id="7_tdzgp"]
+[ext_resource type="Texture2D" uid="uid://cst5np6l6lksa" path="res://assets/generated/factory_toggle_icon_2_frame_0.png" id="8_rqwuh"]
+
+[sub_resource type="ButtonGroup" id="ButtonGroup_z3u88"]
+
+[node name="Node2D" type="Node2D" unique_id=2005346503]
+script = ExtResource("1_wtcfe")
+
+[node name="GridManager" type="Node" parent="." unique_id=1829137283]
+script = ExtResource("2_8mhqk")
+
+[node name="HoverLayer" type="Node2D" parent="." unique_id=1312246388]
+
+[node name="TileMapLayer" type="TileMapLayer" parent="." unique_id=322118490]
+y_sort_enabled = true
+tile_set = ExtResource("3_3l29c")
+
+[node name="Camera2D" type="Camera2D" parent="." unique_id=699214072]
+position = Vector2(0, 100)
+script = ExtResource("4_0hol4")
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=1292433936]
+
+[node name="MoneyLabel" type="Label" parent="UI" unique_id=632292605]
+anchors_preset = 5
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -144.0
+offset_top = 8.0
+offset_right = 144.0
+offset_bottom = 40.0
+theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
+theme_override_font_sizes/font_size = 24
+horizontal_alignment = 1
+
+[node name="RoadToggle" type="TextureButton" parent="UI" unique_id=914233873]
+offset_right = 66.0
+offset_bottom = 24.0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("6_ewfj5")
+texture_pressed = ExtResource("5_jq64y")
+
+[node name="FactoryToggle" type="TextureButton" parent="UI" unique_id=1180538835]
+offset_top = 30.0
+offset_right = 66.0
+offset_bottom = 54.0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("7_tdzgp")
+texture_pressed = ExtResource("8_rqwuh")
+
+[node name="BulldozeToggle" type="TextureButton" parent="UI" unique_id=1018431014]
+offset_top = 134.0
+offset_right = 66.0
+offset_bottom = 158.0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("6_ewfj5")
+texture_pressed = ExtResource("5_jq64y")

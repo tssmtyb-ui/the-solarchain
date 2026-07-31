@@ -36,8 +36,10 @@ const ENV_EFFECT: Dictionary = {
 	GridCellData.TileType.ROAD_CROSS:    -0.03,
 	GridCellData.TileType.SIDEWALK:      0.02,
 	GridCellData.TileType.SIDEWALK_CORNER: 0.02,
-	GridCellData.TileType.RESIDENTIAL:   0.08,
+	GridCellData.TileType.RESIDENTIAL_LOW:   0.08,
+	GridCellData.TileType.RESIDENTIAL_HIGH: 0.12,
 	GridCellData.TileType.INDUSTRIAL:    -0.15,
+	GridCellData.TileType.WAREHOUSE:     -0.08,
 	GridCellData.TileType.SEED_HUB:      0.0,
 }
 
