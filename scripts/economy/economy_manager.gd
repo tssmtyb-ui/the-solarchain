@@ -1,200 +1,79 @@
 class_name EconomyManager
 extends Node
-## Core macroeconomic loop for Spekulant's Land Value Tax (LVT) system.
-##
-## ### Responsibilities
-##   - Maintain the universal flat LVT rate.
-##   - Scan the grid at a timed interval and compute per-tile land value modifiers
-##     based on adjacent environmental features (parks ↔ boost, industry ↔ penalty).
-##   - Calculate total tax revenue across all occupied tiles.
-##
-## ### Decoupled design
-##   This script only **reads** from GridManager via its public API (get_tile,
-##   get_tile_type, get_all_occupied_positions). It never writes to the grid,
-##   never touches rendering, and never handles UI input. Any system that needs
-##   tax data reads from this manager.
-##
-## Usage (as a child of the root scene):
-##   EconomyManager.set_flat_rate(0.15)
-##   EconomyManager.calculate_all()
-##   var rev := EconomyManager.total_revenue
+## Core economic loop for the LVT system.
+## Single source of truth for all income, upkeep, land-value, and worker
+## calculations.  Emits `assessment_completed(net_income: int)` every interval.
 
 # ---------------------------------------------------------------------------
-#   Land-value modifier presets (per tile type)
+#   Economy constants (moved from node_2d.gd)
 # ---------------------------------------------------------------------------
 
-## Boost applied by a single tile of this type to *neighbouring* land value.
-## Positive = luxury (park, transit). Negative = nuisance (industry, road).
-const ENV_EFFECT: Dictionary = {
-	GridCellData.TileType.EMPTY:         0.0,
-	GridCellData.TileType.GRASS:         0.05,
-	GridCellData.TileType.DIRT:          -0.02,
-	GridCellData.TileType.CONCRETE:      -0.05,
-	GridCellData.TileType.ASPHALT:       -0.05,
-	GridCellData.TileType.WATER:         0.10,
-	GridCellData.TileType.ROAD:          -0.03,
-	GridCellData.TileType.ROAD_CROSS:    -0.03,
-	GridCellData.TileType.SIDEWALK:      0.02,
-	GridCellData.TileType.SIDEWALK_CORNER: 0.02,
-	GridCellData.TileType.RESIDENTIAL_LOW:   0.08,
-	GridCellData.TileType.RESIDENTIAL_HIGH: 0.12,
-	GridCellData.TileType.INDUSTRIAL:    -0.15,
-	GridCellData.TileType.WAREHOUSE:     -0.08,
-	GridCellData.TileType.SEED_HUB:      0.0,
-}
+## Per-cycle upkeep cost for each road tile.
+const ROAD_UPKEEP: int = 1
 
-## The base tax bill for one tile before any modifier is applied.
-const BASE_TAX_PER_TILE: float = 10.0
+## Land Value Tax constants — a tile's economic value is determined by
+## Manhattan distance to the nearest edge highway (outside-world connection).
+## Values drop by LVT_DROP_OFF per tile of distance away from the highway,
+## never below MIN_LAND_VALUE.
+const MAX_LAND_VALUE: int = 50
+const LVT_DROP_OFF: int = 3
+const MIN_LAND_VALUE: int = 5
+
+## Maximum land value a low-density villa can afford before being priced out.
+## Villas on land worth more than this provide 0 workers and 0 tax income.
+const MAX_VILLA_LAND_VALUE: int = 30
+
+## Auto-evolution thresholds — when land value crosses these, the simulation
+## triggers a density change (villa <-> apartment) on the next assessment.
+## Upgrade: land value at or above this turns a villa into an apartment.
+const UPGRADE_LVT: int = 30
+## Downgrade: land value at or below this turns an apartment back into a villa.
+const DOWNGRADE_LVT: int = 18
+## Minimum time (msec) between automatic density changes on the same tile,
+## preventing flicker when land value hovers near a threshold.
+const EVOLUTION_COOLDOWN_MSEC: int = 15000
+
+## Worker radius and requirement for the factory labour dependency loop.
+## Factories scan for nearby housing within this Manhattan distance.
+const WORKER_RADIUS: int = 3
+## Workers required for a factory to operate at full efficiency.
+const REQUIRED_WORKERS: int = 2
 
 # ---------------------------------------------------------------------------
-#   Configuration
+#   Configuration (set by root scene before use)
 # ---------------------------------------------------------------------------
-
-## Universal flat LVT rate applied to raw land value.
-## A rate of 0.10 means 10 % of the base value is taxed per assessment period.
-var flat_rate: float = 0.10:
-	set(value):
-		flat_rate = maxf(value, 0.0)
 
 ## Seconds between automatic assessment cycles.
 var assessment_interval: float = 5.0
 
-## Manhattan distance used when scanning for environmental neighbours.
-## 1 = only the 4 direct cardinals.  2 = 8-neighbour + ring-2.
-var env_scan_radius: int = 2
+## Reference to the GridManager — injected by the root scene.
+var grid: GridManager
+
+## Grid dimensions — injected by the root scene.
+var grid_size: int = 10
 
 # ---------------------------------------------------------------------------
-#   State — computed by calculate_all()
+#   State
 # ---------------------------------------------------------------------------
 
-## Total LVT revenue from the last full assessment.
-var total_revenue: float = 0.0
-
-## Per-tile breakdowns from the last assessment, keyed by Vector2i.
-## Each entry: { "base_value": float, "env_modifier": float, "tax_bill": float }
-var tile_assessments: Dictionary = {}
-
-## Signal fired after each full assessment cycle.
-signal assessment_completed(total: float, tile_count: int)
+## Tracks when each tile was last auto-evolved (msec ticks from
+## Time.get_ticks_msec()) so the cooldown prevents density flickering.
+var tile_build_times: Dictionary = {}
 
 # ---------------------------------------------------------------------------
-#   Public API
+#   Signals
 # ---------------------------------------------------------------------------
 
-## Run a full assessment NOW (bypasses the timer).
-func calculate_all() -> void:
-	total_revenue = 0.0
-	tile_assessments.clear()
+## Emitted after each full assessment cycle with the final net income.
+signal assessment_completed(net_income: int)
 
-	var grid: GridManager = _resolve_grid()
-	if grid == null:
-		push_error("EconomyManager: GridManager not available.")
-		return
-
-	var positions: Array[Vector2i] = grid.get_all_occupied_positions()
-
-	for pos in positions:
-		var tile_type: int = grid.get_tile_type(pos)
-		# Skip purely decorative tiles — they don't generate tax.
-		if tile_type in _DECORATIVE:
-			continue
-
-		# 1) Base value = (per-tile constant + land_value_modifier) × flat rate.
-		#    The land_value_modifier is a per-tile boost (e.g. +100 near the Seed Hub).
-		var lvm: float = grid.get_land_value_modifier(pos)
-		var base_value: float = (BASE_TAX_PER_TILE + lvm) * flat_rate
-
-		# 2) Environmental modifier = sum of neighbour effects.
-		var env_modifier: float = _compute_env_modifier(pos, grid)
-
-		# 3) Tax bill = base × (1.0 + env_modifier).
-		var tax_bill: float = base_value * (1.0 + env_modifier)
-
-		var assessment: Dictionary = {
-			"tile_type": tile_type,
-			"base_value": base_value,
-			"env_modifier": env_modifier,
-			"tax_bill": maxf(tax_bill, 0.0),
-		}
-		tile_assessments[pos] = assessment
-		total_revenue += assessment.tax_bill
-
-	assessment_completed.emit(total_revenue, tile_assessments.size())
-
-
-## Set the flat LVT rate and immediately re-assess.
-func set_flat_rate(value: float) -> void:
-	flat_rate = maxf(value, 0.0)
-	calculate_all()
-
-
-## Convenience: retrieve the last tax bill for a tile, or 0.0.
-func get_tax_bill(grid_pos: Vector2i) -> float:
-	var a: Dictionary = tile_assessments.get(grid_pos, {})
-	return a.get("tax_bill", 0.0) as float
-
-
-## Convenience: retrieve the last env modifier for a tile, or 0.0.
-func get_env_modifier(grid_pos: Vector2i) -> float:
-	var a: Dictionary = tile_assessments.get(grid_pos, {})
-	return a.get("env_modifier", 0.0) as float
+## Emitted when a residential tile crosses a land-value threshold and should
+## change density (villa <-> apartment). The root scene performs the swap.
+signal residential_evolution_triggered(grid_pos: Vector2i, new_tile_type: int)
 
 # ---------------------------------------------------------------------------
-#   Internal helpers
+#   Lifecycle
 # ---------------------------------------------------------------------------
-
-## Tile types that are decorative / non-taxable.
-const _DECORATIVE: Array[int] = [
-	GridCellData.TileType.EMPTY,
-	GridCellData.TileType.GRASS,
-	GridCellData.TileType.DIRT,
-	GridCellData.TileType.WATER,
-	GridCellData.TileType.ROAD,
-	GridCellData.TileType.ROAD_CROSS,
-	GridCellData.TileType.SIDEWALK,
-	GridCellData.TileType.SIDEWALK_CORNER,
-]
-
-
-## Scan `env_scan_radius` tiles around `pos` and sum the environmental
-## effect of each neighbour.
-func _compute_env_modifier(pos: Vector2i, grid: GridManager) -> float:
-	var total: float = 0.0
-
-	for dx in range(-env_scan_radius, env_scan_radius + 1):
-		for dy in range(-env_scan_radius, env_scan_radius + 1):
-			# Skip the centre tile itself.
-			if dx == 0 and dy == 0:
-				continue
-			# Skip far diagonals to keep it roughly Manhattan-ish.
-			if abs(dx) + abs(dy) > env_scan_radius:
-				continue
-
-			var neighbour := Vector2i(pos.x + dx, pos.y + dy)
-			var nt: int = grid.get_tile_type(neighbour)
-			total += ENV_EFFECT.get(nt, 0.0)
-
-	# Clamp to a reasonable range so no tile gets a > ±1 modifier.
-	return clampf(total, -1.0, 1.0)
-
-
-## Try every reasonable way to find the GridManager singleton.
-func _resolve_grid() -> GridManager:
-	# 1) Sibling / scene-tree child of the same root.
-	if Engine.get_main_loop() is SceneTree:
-		var tree: SceneTree = Engine.get_main_loop() as SceneTree
-		var root: Window = tree.root
-		if root:
-			# Check the autoload first (registered in project.godot).
-			var auto := root.get_node_or_null("/root/GridManager") as GridManager
-			if auto != null:
-				return auto
-			# Check current scene.
-			var scene: Node = root.get_child(root.get_child_count() - 1)
-			if scene and scene.has_node("GridManager"):
-				return scene.get_node("GridManager") as GridManager
-	return null
-
 
 func _ready() -> void:
 	# Start the periodic timer.
@@ -208,4 +87,101 @@ func _ready() -> void:
 
 
 func _on_timer_timeout() -> void:
-	calculate_all()
+	calculate_net_income()
+
+
+# ---------------------------------------------------------------------------
+#   Public API
+# ---------------------------------------------------------------------------
+
+## Runs a full assessment NOW (bypasses the timer) and emits the signal.
+func calculate_net_income() -> void:
+	var road_count: int = 0
+	var income: int = 0
+	var current_time: int = Time.get_ticks_msec()
+
+	for pos in grid.get_all_occupied_positions():
+		var t: int = grid.get_tile_type(pos)
+		match t:
+			GridCellData.TileType.ROAD, GridCellData.TileType.ROAD_CROSS:
+				road_count += 1
+			GridCellData.TileType.INDUSTRIAL:
+				if _get_local_workers(pos) >= REQUIRED_WORKERS:
+					income += get_land_value(pos)
+				else:
+					prints("Factory at", pos, "is idle! Not enough workers.")
+			GridCellData.TileType.WAREHOUSE:
+				income += get_land_value(pos)
+			GridCellData.TileType.RESIDENTIAL_LOW:
+				var lv: int = get_land_value(pos)
+				if lv <= MAX_VILLA_LAND_VALUE:
+					income += lv
+				else:
+					prints("RESIDENTIAL_LOW at", pos, "pays $0 — land value too high.")
+				# Auto-evolution: land value crossed the upgrade threshold.
+				if lv >= UPGRADE_LVT and _evolution_cooldown_elapsed(pos, current_time):
+					tile_build_times[pos] = current_time
+					residential_evolution_triggered.emit(pos, GridCellData.TileType.RESIDENTIAL_HIGH)
+			GridCellData.TileType.RESIDENTIAL_HIGH:
+				var lv_high: int = get_land_value(pos)
+				income += lv_high * 2
+				# Auto-evolution: land value collapsed below the downgrade threshold.
+				if lv_high <= DOWNGRADE_LVT and _evolution_cooldown_elapsed(pos, current_time):
+					tile_build_times[pos] = current_time
+					residential_evolution_triggered.emit(pos, GridCellData.TileType.RESIDENTIAL_LOW)
+
+	var upkeep: int = road_count * ROAD_UPKEEP
+	var net: int = income - upkeep
+	assessment_completed.emit(net)
+
+
+## Returns the Land Value of a grid position based on Manhattan distance to the
+## nearest edge highway (outside-world connection).
+func get_land_value(grid_pos: Vector2i) -> int:
+	var mid_y: int = int(grid_size * 0.5)
+
+	var west := Vector2i(0, mid_y)
+	var east := Vector2i(grid_size - 1, mid_y)
+
+	var dist_west: int = abs(grid_pos.x - west.x) + abs(grid_pos.y - west.y)
+	var dist_east: int = abs(grid_pos.x - east.x) + abs(grid_pos.y - east.y)
+	var shortest: int = mini(dist_west, dist_east)
+
+	var raw: int = MAX_LAND_VALUE - (shortest * LVT_DROP_OFF)
+	return clampi(raw, MIN_LAND_VALUE, MAX_LAND_VALUE)
+
+
+# ---------------------------------------------------------------------------
+#   Internal helpers
+# ---------------------------------------------------------------------------
+
+## Returns true if the tile's evolution cooldown has elapsed (or the tile has
+## never been auto-evolved), so density changes can't flicker on thresholds.
+func _evolution_cooldown_elapsed(grid_pos: Vector2i, current_time: int) -> bool:
+	if not tile_build_times.has(grid_pos):
+		return true
+	return current_time - tile_build_times[grid_pos] >= EVOLUTION_COOLDOWN_MSEC
+
+
+## Scans within WORKER_RADIUS of a factory position and counts nearby workers.
+## RESIDENTIAL_LOW tiles contribute 1 worker, RESIDENTIAL_HIGH tiles contribute 3.
+## Uses Manhattan distance (abs(dx) + abs(dy) <= WORKER_RADIUS) for the scan.
+func _get_local_workers(factory_pos: Vector2i) -> int:
+	var count: int = 0
+	for dx in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
+		for dy in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
+			if abs(dx) + abs(dy) > WORKER_RADIUS:
+				continue
+			var pos: Vector2i = Vector2i(factory_pos.x + dx, factory_pos.y + dy)
+			if pos.x < 0 or pos.x >= grid_size or pos.y < 0 or pos.y >= grid_size:
+				continue
+			var tile_type: int = grid.get_tile_type(pos)
+			match tile_type:
+				GridCellData.TileType.RESIDENTIAL_LOW:
+					if get_land_value(pos) > MAX_VILLA_LAND_VALUE:
+						prints("Villa at", pos, "abandoned! Land value too high.")
+					else:
+						count += 1
+				GridCellData.TileType.RESIDENTIAL_HIGH:
+					count += 3
+	return count

@@ -101,6 +101,7 @@ func _ready() -> void:
 
 	# Wire up economy signal.
 	_economy.assessment_completed.connect(_on_assessment_completed)
+	_economy.residential_evolution_triggered.connect(_on_residential_evolution)
 
 	# Set up the hover-highlight sprite (a yellow diamond outline).
 	_hover_sprite.texture = HIGHLIGHT_TEXTURE
@@ -134,11 +135,10 @@ func _ready() -> void:
 	_spawn_edge_highways()
 
 	# Start the economy immediately (timer auto-starts in EconomyManager._ready()).
-	_economy.set_flat_rate(0.15)
-	_economy.calculate_all()
+	_economy.calculate_net_income()
 
 	# --- Start background music ---
-	add_child(MusicPlayer.new())
+	add_child(MusicManager.new())
 
 	# --- Build programmatic UI overlays (credits + game-over screen) ---
 	UIBuilder.new().build_ui($UI, _on_restart_pressed)
@@ -334,10 +334,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	_place_tile(grid_pos, current_build_mode)
 	prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
 
-
-
-
-
 ## Called when the Road toggle button is switched on/off.
 ## ON  → set build mode to ROAD, show Switch01 (active).
 ## OFF → reset build mode to EMPTY, show Switch02 (inactive).
@@ -472,40 +468,21 @@ func _get_local_workers(factory_pos: Vector2i) -> int:
 	return count
 
 
-func _on_assessment_completed(total: float, count: int) -> void:
-	# Count placed tile types from the grid data model.
-	var road_count: int = 0
-	var income: int = 0
-
-	for pos in _grid.get_all_occupied_positions():
-		var t: int = _grid.get_tile_type(pos)
-		if t == GridCellData.TileType.ROAD or t == GridCellData.TileType.ROAD_CROSS:
-			road_count += 1
-		elif t == GridCellData.TileType.INDUSTRIAL:
-			# Factories need workers to generate income.
-			if _get_local_workers(pos) >= REQUIRED_WORKERS:
-				income += get_land_value(pos)
-			else:
-				prints("Factory at", pos, "is idle! Not enough workers.")
-		elif t == GridCellData.TileType.WAREHOUSE:
-			income += get_land_value(pos)
-		elif t == GridCellData.TileType.RESIDENTIAL_LOW:
-			var lv: int = get_land_value(pos)
-			if lv <= MAX_VILLA_LAND_VALUE:
-				income += lv
-			else:
-				prints("RESIDENTIAL_LOW at", pos, "pays $0 — land value too high.")
-		elif t == GridCellData.TileType.RESIDENTIAL_HIGH:
-			# High-density captures double the land value.
-			income += get_land_value(pos) * 2
-
-	var upkeep: int = road_count * ROAD_UPKEEP
-	var net: int = income - upkeep
-
-	current_money += net
+func _on_assessment_completed(net_income: int) -> void:
+	current_money += net_income
 	update_money_ui()
-	prints("Assessment: tiles:", count, "revenue: $", snapped(total, 0.01),
-		" roads:", road_count, " income:+$", income, " upkeep:-$", upkeep, " net:", net)
+	prints("Assessment: net:", net_income)
+
+
+## Handles automatic density evolution (villa <-> apartment) driven by land value.
+## The EconomyManager emits this when a residential tile crosses a threshold.
+func _on_residential_evolution(grid_pos: Vector2i, new_tile_type: int) -> void:
+	# Update the data model and ground tile, then swap the building sprite.
+	# spawn_building() already queue_frees any existing sprite at this cell.
+	_grid.set_tile(grid_pos, GridCellData.new(new_tile_type))
+	_place_tile(grid_pos, new_tile_type)
+	_placement.spawn_building(grid_pos, new_tile_type)
+	prints("Evolved tile at", grid_pos, "->", GridCellData.TileType.keys()[new_tile_type])
 
 
 ## Updates the money label to reflect the current balance.
@@ -532,7 +509,8 @@ func _on_restart_pressed() -> void:
 func _create_economy_manager() -> EconomyManager:
 	var em := EconomyManager.new()
 	em.name = "EconomyManager"
-	em.flat_rate = 0.15
+	em.grid = _grid
+	em.grid_size = GRID_SIZE
 	em.assessment_interval = 5.0
 	add_child(em)
 	move_child(em, 0)
@@ -546,13 +524,6 @@ func _create_placement_manager() -> BuildingPlacement:
 	bp.tilemap = _tilemap
 	add_child(bp)
 	return bp
-
-
-
-
-
-
-
 
 ## Look up the TileSet source/coords for a GridCellData tile type and place it.
 func _place_tile(_cell: Vector2i, tile_type: int) -> void:

@@ -1,4 +1,4 @@
-class_name MusicPlayer
+class_name MusicManager
 extends Node
 ## Plays the soundtrack as a continuous sequential loop.
 ## Creates an AudioStreamPlayer child and alternates between MP3 tracks
