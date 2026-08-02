@@ -1,8 +1,8 @@
+class_name MusicPlayer
 extends Node
 ## Plays the soundtrack as a continuous sequential loop.
-##
-## Creates an AudioStreamPlayer child and alternates between two MP3 tracks
-## so that when one finishes, the other starts automatically.
+## Creates an AudioStreamPlayer child and alternates between MP3 tracks
+## so that when one finishes, the next one starts automatically.
 
 const TRACKS: Array[AudioStream] = [
 	preload("res://music/bensound-thejazzpiano.mp3"),
@@ -15,7 +15,7 @@ var _current_index: int = 0
 
 func _ready() -> void:
 	_player = AudioStreamPlayer.new()
-	_player.name = "MusicPlayer"
+	_player.name = "AudioPlayer"
 	_player.volume_db = -6.0
 	_player.bus = "Master"
 	_player.finished.connect(_on_track_ended)
@@ -26,7 +26,9 @@ func _ready() -> void:
 func _play_track(index: int) -> void:
 	_current_index = index
 	_player.stream = TRACKS[index]
+	_player.volume_db = 0.0
 	_player.play()
+	prints("Music: playing track", index)
 
 
 func _on_track_ended() -> void:

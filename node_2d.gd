@@ -9,6 +9,7 @@ extends Node2D
 @onready var _hover_layer: Node2D = $HoverLayer
 @onready var _economy: EconomyManager = _create_economy_manager()
 @onready var _money_label: Label = $UI/MoneyLabel
+@onready var _placement: BuildingPlacement = _create_placement_manager()
 
 
 ## Maps GridCellData.TileType → { source_id, atlas_coords } for TileSet lookup.
@@ -70,12 +71,6 @@ const MAX_VILLA_LAND_VALUE: int = 30
 const WORKER_RADIUS: int = 3
 ## Workers required for a factory to operate at full efficiency.
 const REQUIRED_WORKERS: int = 2
-
-## Background-music tracks played in a continuous sequential loop.
-const MUSIC_TRACKS: Array[AudioStream] = [
-	preload("res://music/bensound-thejazzpiano.mp3"),
-	preload("res://music/bensound-jazzcomedy.mp3"),
-]
 
 ## Edge highway cells that are protected from bulldozing.
 const EDGE_HIGHWAY_CELLS: Array[Vector2i] = [
@@ -142,54 +137,11 @@ func _ready() -> void:
 	_economy.set_flat_rate(0.15)
 	_economy.calculate_all()
 
-	# --- Start background music (sequential looping playlist) ---
-	_setup_music()
+	# --- Start background music ---
+	add_child(MusicPlayer.new())
 
-	# --- Credits watermark ---
-	var credits_label := Label.new()
-	credits_label.name = "CreditsLabel"
-	credits_label.text = "Art: Isometric City Kit by Buggy Studio"
-	credits_label.anchor_top = 1.0
-	credits_label.anchor_bottom = 1.0
-	credits_label.anchor_left = 0.0
-	credits_label.anchor_right = 1.0
-	credits_label.offset_top = -28.0
-	credits_label.offset_bottom = -8.0
-	credits_label.offset_right = -8.0
-	credits_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	credits_label.modulate.a = 0.5
-	credits_label.add_theme_font_size_override(&"font_size", 12)
-	$UI.add_child(credits_label)
-
-	# --- Game Over screen (hidden until bankruptcy) ---
-	var game_over_panel := ColorRect.new()
-	game_over_panel.name = "GameOverPanel"
-	game_over_panel.color = Color(0, 0, 0, 0.7)
-	game_over_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	game_over_panel.hide()
-	$UI.add_child(game_over_panel)
-
-	var center_box := VBoxContainer.new()
-	center_box.name = "CenterBox"
-	center_box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	center_box.alignment = BoxContainer.ALIGNMENT_CENTER
-	game_over_panel.add_child(center_box)
-
-	var game_over_label := Label.new()
-	game_over_label.name = "GameOverLabel"
-	game_over_label.text = "GAME OVER\nYou went bankrupt!"
-	game_over_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	game_over_label.add_theme_font_size_override(&"font_size", 40)
-	game_over_label.add_theme_color_override(&"font_color", Color(1, 1, 1))
-	center_box.add_child(game_over_label)
-
-	var restart_button := Button.new()
-	restart_button.name = "RestartButton"
-	restart_button.text = "Restart Game"
-	restart_button.custom_minimum_size = Vector2(180, 44)
-	restart_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	restart_button.pressed.connect(_on_restart_pressed)
-	center_box.add_child(restart_button)
+	# --- Build programmatic UI overlays (credits + game-over screen) ---
+	UIBuilder.new().build_ui($UI, _on_restart_pressed)
 
 	update_money_ui()
 
@@ -300,7 +252,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		update_money_ui()
 		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
 		_place_tile(grid_pos, current_build_mode)
-		_spawn_building_sprite(grid_pos, current_build_mode)
+		_placement.spawn_building(grid_pos, current_build_mode)
 		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
 		return
 
@@ -325,7 +277,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		update_money_ui()
 		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
 		_place_tile(grid_pos, current_build_mode)
-		_spawn_building_sprite(grid_pos, current_build_mode)
+		_placement.spawn_building(grid_pos, current_build_mode)
 		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
 		return
 
@@ -339,7 +291,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			update_money_ui()
 			_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.RESIDENTIAL_HIGH))
 			_place_tile(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
-			_spawn_building_sprite(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
+			_placement.spawn_building(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
 			prints("Upgraded to RESIDENTIAL_HIGH at", grid_pos)
 			return
 
@@ -351,7 +303,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		update_money_ui()
 		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
 		_place_tile(grid_pos, current_build_mode)
-		_spawn_building_sprite(grid_pos, current_build_mode)
+		_placement.spawn_building(grid_pos, current_build_mode)
 		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
 		return
 
@@ -368,11 +320,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		   or existing == GridCellData.TileType.RESIDENTIAL_LOW \
 		   or existing == GridCellData.TileType.RESIDENTIAL_HIGH:
 			# Destroy any building sprite attached to this tile.
-			if _building_sprites.has(grid_pos):
-				var sprite: Node = _building_sprites[grid_pos] as Node
-				if is_instance_valid(sprite):
-					sprite.queue_free()
-				_building_sprites.erase(grid_pos)
+			_placement.remove_building(grid_pos)
 
 			# Reset the tile to grass in data model + tilemap.
 			_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
@@ -591,113 +539,19 @@ func _create_economy_manager() -> EconomyManager:
 	return em
 
 
-## Tracks building Sprite2D nodes keyed by grid position.
-## Allows cleanup when a tile is replaced with a different type.
-var _building_sprites: Dictionary = {}
-
-## Preload the factory building texture (used for INDUSTRIAL tiles).
-const FACTORY: Texture2D = preload("res://assets/factory/FactoryC.png")
-
-## Preload the warehouse building texture (used for WAREHOUSE tiles).
-const WAREHOUSE: Texture2D = preload("res://assets/warehouse/warehouseBrownA.png")
-
-## Preload the house building textures (randomly picked for RESIDENTIAL_LOW tiles).
-const HOUSE_A: Texture2D = preload("res://assets/House/houseSmallBlueA.png")
-const HOUSE_B: Texture2D = preload("res://assets/House/houseSmallBlueB.png")
-
-## Preload the apartment building textures (randomly picked for RESIDENTIAL_HIGH tiles).
-const APARTMENT_A: Texture2D = preload("res://assets/Apartment/buildingTallOrangeA.png")
-const APARTMENT_B: Texture2D = preload("res://assets/Apartment/buildingTallOrangeB.png")
+## Creates and adds the BuildingPlacement manager, wiring its tilemap reference.
+func _create_placement_manager() -> BuildingPlacement:
+	var bp := BuildingPlacement.new()
+	bp.name = "BuildingPlacement"
+	bp.tilemap = _tilemap
+	add_child(bp)
+	return bp
 
 
-## Spawns (or replaces) a building Sprite2D overlay for the given tile type.
-##
-## All math assumes a 512×256 isometric diamond tile (Diamond Right layout).
-## The building's visual base (texture bottom edge) is pinned to the diamond
-## bottom tip (ground plane) so the structure rests on the tile surface.
-## Y-sort happens at diamond_centre.y so tiles in front
-## (south, higher Y) render on top of the building's lower portion.
-func _spawn_building_sprite(cell: Vector2i, tile_type: int) -> void:
-	# Remove any existing sprite at this cell first.
-	if _building_sprites.has(cell):
-		var old: Node = _building_sprites[cell] as Node
-		if is_instance_valid(old):
-			old.queue_free()
-		_building_sprites.erase(cell)
-
-	# Pick the building texture for this tile type.
-	var tex: Texture2D
-	match tile_type:
-		GridCellData.TileType.INDUSTRIAL:
-			tex = FACTORY
-		GridCellData.TileType.WAREHOUSE:
-			tex = WAREHOUSE
-		GridCellData.TileType.RESIDENTIAL_LOW:
-			tex = HOUSE_A if randi() % 2 == 0 else HOUSE_B
-		GridCellData.TileType.RESIDENTIAL_HIGH:
-			tex = APARTMENT_A if randi() % 2 == 0 else APARTMENT_B
-		_:
-			return  # No building sprite for other tile types.
-
-	# Create the sprite, centered (so position = centre of the sprite rect).
-	var sprite := Sprite2D.new()
-	sprite.texture = tex
-	sprite.centered = true
-	sprite.name = "Building_%d_%d" % [cell.x, cell.y]
-	sprite.z_index = 0
-	sprite.y_sort_enabled = true
-
-	# Scale so the building fills ~75 % of the 512 px diamond width.
-	var tex_size: Vector2 = tex.get_size()
-	var target_width: float = 384.0
-	var s: float = target_width / tex_size.x
-	sprite.scale = Vector2(s, s)
-
-	# Position at diamond centre so y-sort aligns with the tile's vertical midpoint.
-	# Tiles in front (south, higher Y) sort after us and render on top.
-	var diamond_centre: Vector2 = _tilemap.map_to_local(cell)
-	sprite.position = diamond_centre
-
-	# Offset the sprite centre so the scaled texture's bottom edge sits exactly
-	# at the diamond bottom tip (ground plane), 128 px below diamond_centre.y.
-	# With centered = true:
-	#   centre_y + offset_y + tex_h/2 * s = diamond_centre.y + 128
-	#   → offset_y = 128 - tex_h/2 * s
-	var offset_y: float = 128.0 - (tex_size.y * 0.5 * s)
-	sprite.offset = Vector2(0, offset_y)
-
-	_tilemap.add_child(sprite)
-	_building_sprites[cell] = sprite
 
 
-## Background-music state.
-var _music_player: AudioStreamPlayer
-var _music_index: int = 0
 
 
-## Sets up an AudioStreamPlayer child for background music and starts playback.
-## Tracks play sequentially in a never-ending loop via the finished signal.
-func _setup_music() -> void:
-	_music_player = AudioStreamPlayer.new()
-	_music_player.name = "MusicPlayer"
-	_music_player.volume_db = -6.0
-	_music_player.bus = "Master"
-	_music_player.finished.connect(_on_music_track_ended)
-	add_child(_music_player)
-	_play_music_track(0)
-
-
-func _play_music_track(index: int) -> void:
-	_music_index = index
-	_music_player.stream = MUSIC_TRACKS[index]
-	_music_player.volume_db = 0.0
-	_music_player.play()
-	prints("MusicManager: playing track", index)
-
-
-func _on_music_track_ended() -> void:
-	var next: int = (_music_index + 1) % MUSIC_TRACKS.size()
-	_play_music_track(next)
 
 
 ## Look up the TileSet source/coords for a GridCellData tile type and place it.
