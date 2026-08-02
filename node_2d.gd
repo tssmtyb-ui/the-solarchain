@@ -90,6 +90,9 @@ var current_build_mode: int = GridCellData.TileType.EMPTY
 ## Player's current money balance.
 var current_money: int = 1000
 
+## True once the player goes bankrupt (money drops below zero); blocks input.
+var is_game_over: bool = false
+
 
 func _ready() -> void:
 	assert(_grid != null, "GridManager node missing!")
@@ -141,6 +144,52 @@ func _ready() -> void:
 
 	# --- Start background music (sequential looping playlist) ---
 	_setup_music()
+
+	# --- Credits watermark ---
+	var credits_label := Label.new()
+	credits_label.name = "CreditsLabel"
+	credits_label.text = "Art: Isometric City Kit by Buggy Studio"
+	credits_label.anchor_top = 1.0
+	credits_label.anchor_bottom = 1.0
+	credits_label.anchor_left = 0.0
+	credits_label.anchor_right = 1.0
+	credits_label.offset_top = -28.0
+	credits_label.offset_bottom = -8.0
+	credits_label.offset_right = -8.0
+	credits_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	credits_label.modulate.a = 0.5
+	credits_label.add_theme_font_size_override(&"font_size", 12)
+	$UI.add_child(credits_label)
+
+	# --- Game Over screen (hidden until bankruptcy) ---
+	var game_over_panel := ColorRect.new()
+	game_over_panel.name = "GameOverPanel"
+	game_over_panel.color = Color(0, 0, 0, 0.7)
+	game_over_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	game_over_panel.hide()
+	$UI.add_child(game_over_panel)
+
+	var center_box := VBoxContainer.new()
+	center_box.name = "CenterBox"
+	center_box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	game_over_panel.add_child(center_box)
+
+	var game_over_label := Label.new()
+	game_over_label.name = "GameOverLabel"
+	game_over_label.text = "GAME OVER\nYou went bankrupt!"
+	game_over_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	game_over_label.add_theme_font_size_override(&"font_size", 40)
+	game_over_label.add_theme_color_override(&"font_color", Color(1, 1, 1))
+	center_box.add_child(game_over_label)
+
+	var restart_button := Button.new()
+	restart_button.name = "RestartButton"
+	restart_button.text = "Restart Game"
+	restart_button.custom_minimum_size = Vector2(180, 44)
+	restart_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	restart_button.pressed.connect(_on_restart_pressed)
+	center_box.add_child(restart_button)
 
 	update_money_ui()
 
@@ -200,6 +249,9 @@ func _process(_delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if is_game_over:
+		return
+
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 
@@ -364,7 +416,7 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 	var btn: TextureButton = $UI/FactoryToggle
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.INDUSTRIAL
-		btn.texture_normal = preload("res://assets/generated/factory_toggle_icon_2_frame_0.png")
+		btn.texture_normal = preload("res://assets/factory/FactoryC.png")
 		$UI/RoadToggle.set_pressed_no_signal(false)
 		$UI/WarehouseToggle.set_pressed_no_signal(false)
 		$UI/ResidentialToggle.set_pressed_no_signal(false)
@@ -372,7 +424,7 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 		prints("Build mode: INDUSTRIAL")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
-		btn.texture_normal = preload("res://assets/generated/factory_toggle_icon_frame_0.png")
+		btn.texture_normal = preload("res://assets/factory/FactoryC.png")
 		prints("Build mode: OFF")
 
 
@@ -511,6 +563,19 @@ func _on_assessment_completed(total: float, count: int) -> void:
 ## Updates the money label to reflect the current balance.
 func update_money_ui() -> void:
 	_money_label.text = "$%d" % current_money
+
+	# Game over check: bankruptcy freezes the game and shows the game-over screen.
+	if current_money < 0 and not is_game_over:
+		is_game_over = true
+		var timer: Timer = _economy.get_node_or_null("AssessmentTimer")
+		if timer:
+			timer.stop()
+		$UI/GameOverPanel.show()
+
+
+## Restarts the current scene when the player clicks "Restart Game".
+func _on_restart_pressed() -> void:
+	get_tree().reload_current_scene()
 
 
 # ---- Bootstrap helper -------------------------------------------------------
