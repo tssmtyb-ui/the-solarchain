@@ -27,6 +27,8 @@ const TILE_TYPE_MAP: Dictionary = {
 	GridCellData.TileType.RESIDENTIAL_HIGH: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
 	GridCellData.TileType.INDUSTRIAL:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
 	GridCellData.TileType.WAREHOUSE:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
+	GridCellData.TileType.PARK:       { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; gazebo spawned separately
+	GridCellData.TileType.SLUDGE:     { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; pipe spawned separately
 }
 
 ## Grid dimensions for the starting map.
@@ -50,6 +52,8 @@ const FACTORY_COST: int = 100
 const WAREHOUSE_COST: int = 60
 const RESIDENTIAL_COST: int = 50
 const UPGRADE_COST: int = 150
+const PARK_COST: int = 50
+const SLUDGE_COST: int = 10
 
 ## Per-cycle tile economics (applied in _on_assessment_completed).
 const ROAD_UPKEEP: int = 1
@@ -125,6 +129,14 @@ func _ready() -> void:
 	var residential_toggle: TextureButton = $UI/ResidentialToggle
 	residential_toggle.tooltip_text = "Build Residential"
 	residential_toggle.toggled.connect(_on_residential_toggle_toggled)
+
+	var park_toggle: TextureButton = $UI/ParkToggle
+	park_toggle.tooltip_text = "Build Park"
+	park_toggle.toggled.connect(_on_park_toggle_toggled)
+
+	var sludge_toggle: TextureButton = $UI/SludgeToggle
+	sludge_toggle.tooltip_text = "Build Sludge Line"
+	sludge_toggle.toggled.connect(_on_sludge_toggle_toggled)
 
 	var bulldoze_toggle: TextureButton = $UI/BulldozeToggle
 	bulldoze_toggle.tooltip_text = "Bulldozer (Demolish)"
@@ -204,6 +216,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	if is_game_over:
 		return
 
+	# Hotkeys: 5 = Park, 6 = Sludge (activates the matching UI toggle).
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_5:
+				$UI/ParkToggle.set_pressed(true)
+				return
+			KEY_6:
+				$UI/SludgeToggle.set_pressed(true)
+				return
+
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 
@@ -281,6 +303,30 @@ func _unhandled_input(event: InputEvent) -> void:
 		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
 		return
 
+	if current_build_mode == GridCellData.TileType.PARK:
+		if current_money < PARK_COST:
+			prints("Not enough money!")
+			return
+		current_money -= PARK_COST
+		update_money_ui()
+		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
+		_place_tile(grid_pos, current_build_mode)
+		_placement.spawn_building(grid_pos, current_build_mode)
+		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+		return
+
+	if current_build_mode == GridCellData.TileType.SLUDGE:
+		if current_money < SLUDGE_COST:
+			prints("Not enough money!")
+			return
+		current_money -= SLUDGE_COST
+		update_money_ui()
+		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
+		_place_tile(grid_pos, current_build_mode)
+		_placement.spawn_building(grid_pos, current_build_mode)
+		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+		return
+
 	if current_build_mode == GridCellData.TileType.RESIDENTIAL_LOW:
 		# Upgrade: clicking on an existing house upgrades it to an apartment.
 		if existing == GridCellData.TileType.RESIDENTIAL_LOW:
@@ -318,7 +364,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		   or existing == GridCellData.TileType.INDUSTRIAL \
 		   or existing == GridCellData.TileType.WAREHOUSE \
 		   or existing == GridCellData.TileType.RESIDENTIAL_LOW \
-		   or existing == GridCellData.TileType.RESIDENTIAL_HIGH:
+		   or existing == GridCellData.TileType.RESIDENTIAL_HIGH \
+		   or existing == GridCellData.TileType.PARK \
+		   or existing == GridCellData.TileType.SLUDGE:
 			# Destroy any building sprite attached to this tile.
 			_placement.remove_building(grid_pos)
 
@@ -342,10 +390,7 @@ func _on_road_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.ROAD
 		btn.texture_normal = preload("res://Ui/Switch01.png")
-		$UI/BulldozeToggle.set_pressed_no_signal(false)
-		$UI/FactoryToggle.set_pressed_no_signal(false)
-		$UI/WarehouseToggle.set_pressed_no_signal(false)
-		$UI/ResidentialToggle.set_pressed_no_signal(false)
+		_unpress_other_toggles("RoadToggle")
 		prints("Build mode: ROAD")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -361,10 +406,7 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.INDUSTRIAL
 		btn.texture_normal = preload("res://assets/factory/FactoryC.png")
-		$UI/RoadToggle.set_pressed_no_signal(false)
-		$UI/WarehouseToggle.set_pressed_no_signal(false)
-		$UI/ResidentialToggle.set_pressed_no_signal(false)
-		$UI/BulldozeToggle.set_pressed_no_signal(false)
+		_unpress_other_toggles("FactoryToggle")
 		prints("Build mode: INDUSTRIAL")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -378,10 +420,7 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 func _on_warehouse_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.WAREHOUSE
-		$UI/RoadToggle.set_pressed_no_signal(false)
-		$UI/FactoryToggle.set_pressed_no_signal(false)
-		$UI/ResidentialToggle.set_pressed_no_signal(false)
-		$UI/BulldozeToggle.set_pressed_no_signal(false)
+		_unpress_other_toggles("WarehouseToggle")
 		prints("Build mode: WAREHOUSE")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -394,10 +433,7 @@ func _on_warehouse_toggle_toggled(toggled_on: bool) -> void:
 func _on_residential_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.RESIDENTIAL_LOW
-		$UI/RoadToggle.set_pressed_no_signal(false)
-		$UI/FactoryToggle.set_pressed_no_signal(false)
-		$UI/WarehouseToggle.set_pressed_no_signal(false)
-		$UI/BulldozeToggle.set_pressed_no_signal(false)
+		_unpress_other_toggles("ResidentialToggle")
 		prints("Build mode: RESIDENTIAL_LOW")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
@@ -413,15 +449,45 @@ func _on_bulldoze_toggle_toggled(toggled_on: bool) -> void:
 	if toggled_on:
 		current_build_mode = BULLDOZE
 		btn.texture_normal = preload("res://Ui/Switch01.png")
-		$UI/RoadToggle.set_pressed_no_signal(false)
-		$UI/FactoryToggle.set_pressed_no_signal(false)
-		$UI/WarehouseToggle.set_pressed_no_signal(false)
-		$UI/ResidentialToggle.set_pressed_no_signal(false)
+		_unpress_other_toggles("BulldozeToggle")
 		prints("Build mode: BULLDOZE")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
 		btn.texture_normal = preload("res://Ui/Switch02.png")
 		prints("Build mode: OFF")
+
+
+## Called when the Park toggle button is switched on/off.
+## ON  → set build mode to PARK. OFF → reset build mode to EMPTY.
+func _on_park_toggle_toggled(toggled_on: bool) -> void:
+	if toggled_on:
+		current_build_mode = GridCellData.TileType.PARK
+		_unpress_other_toggles("ParkToggle")
+		prints("Build mode: PARK")
+	else:
+		current_build_mode = GridCellData.TileType.EMPTY
+		prints("Build mode: OFF")
+
+
+## Called when the Sludge toggle button is switched on/off.
+## ON  → set build mode to SLUDGE. OFF → reset build mode to EMPTY.
+func _on_sludge_toggle_toggled(toggled_on: bool) -> void:
+	if toggled_on:
+		current_build_mode = GridCellData.TileType.SLUDGE
+		_unpress_other_toggles("SludgeToggle")
+		prints("Build mode: SLUDGE")
+	else:
+		current_build_mode = GridCellData.TileType.EMPTY
+		prints("Build mode: OFF")
+
+
+## Unpresses every other build-mode toggle so only `except_name` stays active.
+## The ButtonGroup already handles visual exclusivity; this keeps state in sync
+## when modes are switched programmatically (e.g. via hotkeys).
+func _unpress_other_toggles(except_name: String) -> void:
+	for child in $UI.get_children():
+		if child is TextureButton and child.name != except_name and child.button_pressed:
+			child.set_pressed_no_signal(false)
 
 
 ## Returns the Land Value of a grid position based on Manhattan distance to the

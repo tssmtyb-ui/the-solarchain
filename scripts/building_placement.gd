@@ -11,6 +11,8 @@ const HOUSE_A: Texture2D = preload("res://assets/House/houseSmallBlueA.png")
 const HOUSE_B: Texture2D = preload("res://assets/House/houseSmallBlueB.png")
 const APARTMENT_A: Texture2D = preload("res://assets/Apartment/buildingTallOrangeA.png")
 const APARTMENT_B: Texture2D = preload("res://assets/Apartment/buildingTallOrangeB.png")
+const GAZEBO: Texture2D = preload("res://assets/Park/gazebo.png")
+const SLUDGE_PIPE: Texture2D = preload("res://assets/generated/sludge_pipe.png")
 
 ## Reference to the TileMapLayer — set by the root scene after creation.
 var tilemap: TileMapLayer
@@ -82,4 +84,8 @@ func _texture_for_type(tile_type: int) -> Texture2D:
 			return HOUSE_A if randi() % 2 == 0 else HOUSE_B
 		GridCellData.TileType.RESIDENTIAL_HIGH:
 			return APARTMENT_A if randi() % 2 == 0 else APARTMENT_B
+		GridCellData.TileType.PARK:
+			return GAZEBO
+		GridCellData.TileType.SLUDGE:
+			return SLUDGE_PIPE
 	return null

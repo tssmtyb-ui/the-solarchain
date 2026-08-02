@@ -9,6 +9,8 @@
 [ext_resource type="Texture2D" uid="uid://b3kd8a3v0jq4x" path="res://assets/factory/FactoryC.png" id="8_rqwuh"]
 [ext_resource type="Script" uid="uid://bj1vpfanb80e8" path="res://scripts/ui/music_attribution.gd" id="9_g4qxb"]
 [ext_resource type="Texture2D" uid="uid://csvurd8y1u8vy" path="res://assets/warehouse/warehouseBrownA.png" id="9_ir8iy"]
+[ext_resource type="Texture2D" uid="uid://du16km40rfl4w" path="res://assets/Park/gazebo.png" id="10_park"]
+[ext_resource type="Texture2D" uid="uid://cy6eb70r07cp6" path="res://assets/generated/sludge_pipe.png" id="11_sludge"]
 
 [sub_resource type="ButtonGroup" id="ButtonGroup_z3u88"]
 
@@ -85,6 +87,37 @@ toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("9_ir8iy")
 texture_pressed = ExtResource("9_ir8iy")
+ignore_texture_size = true
+stretch_mode = 5
+
+[node name="ParkToggle" type="TextureButton" parent="UI" unique_id=370884910]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -101.0
+offset_top = 81.0
+offset_bottom = 165.0
+grow_horizontal = 0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("10_park")
+texture_pressed = ExtResource("10_park")
+ignore_texture_size = true
+stretch_mode = 5
+
+[node name="SludgeToggle" type="TextureButton" parent="UI" unique_id=1472725976]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -77.0
+offset_top = 178.0
+offset_right = -15.0
+offset_bottom = 223.0
+grow_horizontal = 0
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("11_sludge")
+texture_pressed = ExtResource("11_sludge")
 ignore_texture_size = true
 stretch_mode = 5
 

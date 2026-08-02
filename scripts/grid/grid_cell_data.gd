@@ -19,6 +19,8 @@ enum TileType {
 	INDUSTRIAL,
 	WAREHOUSE,
 	SEED_HUB,
+	PARK,
+	SLUDGE,
 }
 
 var tile_type: int = TileType.EMPTY
