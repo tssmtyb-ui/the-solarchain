@@ -49,6 +49,19 @@ const WORKER_RADIUS: int = 3
 const REQUIRED_WORKERS: int = 2
 
 # ---------------------------------------------------------------------------
+#   If/Then event rules (GDD Priority 2)
+# ---------------------------------------------------------------------------
+
+## Pollution penalty (Miljöskatten) — every residential tile within this
+## Manhattan radius of a factory pays a flat environmental fee per tick.
+const POLLUTION_RADIUS: int = 5
+const POLLUTION_FEE_PER_HOUSE: int = 50
+
+## Land-hoarding tax (Spekulationsspärren) — claimed land left unbuilt longer
+## than this pays 2x LVT per tick (5 minutes).
+const HOARDING_TIME_LIMIT_MSEC: int = 300000
+
+# ---------------------------------------------------------------------------
 #   Configuration (set by root scene before use)
 # ---------------------------------------------------------------------------
 
@@ -68,6 +81,11 @@ var grid_size: int = 10
 ## Tracks when each tile was last auto-evolved (msec ticks from
 ## Time.get_ticks_msec()) so the cooldown prevents density flickering.
 var tile_build_times: Dictionary = {}
+
+## Tracks when the player first claimed each tile (Time.get_ticks_msec()).
+## Ownership persists after bulldozing — idle claimed land is exactly what the
+## land-hoarding tax targets. Built tiles are naturally excluded from the check.
+var tile_claimed_times: Dictionary = {}
 
 # ---------------------------------------------------------------------------
 #   Signals
@@ -107,14 +125,23 @@ func _on_timer_timeout() -> void:
 func calculate_net_income() -> void:
 	var road_count: int = 0
 	var income: int = 0
+	var pollution_fee: int = 0
 	var current_time: int = Time.get_ticks_msec()
 
 	for pos in grid.get_all_occupied_positions():
 		var t: int = grid.get_tile_type(pos)
+		# Stamp the first time the player claims a tile (any non-canvas type).
+		# Pre-filled GRASS canvas tiles are never stamped — only real claims
+		# qualify for the hoarding check later.
+		if t != GridCellData.TileType.GRASS and t != GridCellData.TileType.DIRT_LOT \
+				and not tile_claimed_times.has(pos):
+			tile_claimed_times[pos] = current_time
 		match t:
 			GridCellData.TileType.ROAD, GridCellData.TileType.ROAD_CROSS:
 				road_count += 1
 			GridCellData.TileType.INDUSTRIAL:
+				# Miljöskatten: every house within POLLUTION_RADIUS pays a fee.
+				pollution_fee += _count_residential_in_radius(pos, POLLUTION_RADIUS) * POLLUTION_FEE_PER_HOUSE
 				if _get_local_workers(pos) >= REQUIRED_WORKERS:
 					income += get_land_value(pos)
 				else:
@@ -140,7 +167,8 @@ func calculate_net_income() -> void:
 					residential_evolution_triggered.emit(pos, GridCellData.TileType.RESIDENTIAL_LOW)
 
 	var upkeep: int = road_count * ROAD_UPKEEP
-	var net: int = income - upkeep
+	var hoarding_tax: int = _hoarding_tax(current_time)
+	var net: int = income - upkeep - pollution_fee - hoarding_tax
 	assessment_completed.emit(net)
 
 
@@ -219,3 +247,35 @@ func _get_local_workers(factory_pos: Vector2i) -> int:
 				GridCellData.TileType.RESIDENTIAL_HIGH:
 					count += 3
 	return count
+
+
+## Counts residential tiles (Low or High) within a Manhattan radius — used by
+## the pollution penalty. Priced-out villas still pollute (they are houses).
+func _count_residential_in_radius(grid_pos: Vector2i, radius: int) -> int:
+	var count: int = 0
+	for dx in range(-radius, radius + 1):
+		for dy in range(-radius, radius + 1):
+			if abs(dx) + abs(dy) > radius:
+				continue
+			var pos: Vector2i = Vector2i(grid_pos.x + dx, grid_pos.y + dy)
+			if pos.x < 0 or pos.x >= grid_size or pos.y < 0 or pos.y >= grid_size:
+				continue
+			var tile_type: int = grid.get_tile_type(pos)
+			if tile_type == GridCellData.TileType.RESIDENTIAL_LOW \
+					or tile_type == GridCellData.TileType.RESIDENTIAL_HIGH:
+				count += 1
+	return count
+
+
+## Spekulationsspärren: sums 2x LVT for every claimed tile left unbuilt longer
+## than HOARDING_TIME_LIMIT_MSEC. Only unbuilt tiles (EMPTY/GRASS) qualify, so
+## tiles with structures naturally drop out of the check.
+func _hoarding_tax(current_time: int) -> int:
+	var tax: int = 0
+	for pos in tile_claimed_times:
+		if current_time - int(tile_claimed_times[pos]) <= HOARDING_TIME_LIMIT_MSEC:
+			continue
+		var tile_type: int = grid.get_tile_type(pos)
+		if tile_type == GridCellData.TileType.EMPTY or tile_type == GridCellData.TileType.GRASS:
+			tax += get_land_value(pos) * 2
+	return tax

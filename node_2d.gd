@@ -11,6 +11,9 @@ extends Node2D
 @onready var _money_label: Label = $UI/MoneyLabel
 @onready var _placement: BuildingPlacement = _create_placement_manager()
 
+## Corporate speculator AI — its claimed land is off-limits to the player.
+var _speculator: SpeculatorManager
+
 
 ## Maps GridCellData.TileType → { source_id, atlas_coords } for TileSet lookup.
 ## Keeps the data model decoupled from the rendering layer.
@@ -29,6 +32,7 @@ const TILE_TYPE_MAP: Dictionary = {
 	GridCellData.TileType.WAREHOUSE:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
 	GridCellData.TileType.PARK:       { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; gazebo spawned separately
 	GridCellData.TileType.SLUDGE:     { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; pipe spawned separately
+	GridCellData.TileType.DIRT_LOT:   { "source_id": 1,  "coords": Vector2i(0, 0) }, # dirt lot — speculator-owned land
 }
 
 ## Grid dimensions for the starting map.
@@ -106,6 +110,12 @@ func _ready() -> void:
 	# Wire up economy signal.
 	_economy.assessment_completed.connect(_on_assessment_completed)
 	_economy.residential_evolution_triggered.connect(_on_residential_evolution)
+
+	# Corporate speculator AI — its claimed land is off-limits to the player.
+	_speculator = SpeculatorManager.new()
+	add_child(_speculator)
+	_speculator.speculator_bankrupt.connect(_on_speculator_bankrupt)
+	_speculator.speculator_panic_sold.connect(_on_speculator_panic_sold)
 
 	# Set up the hover-highlight sprite (a yellow diamond outline).
 	_hover_sprite.texture = HIGHLIGHT_TEXTURE
@@ -191,6 +201,16 @@ func _within_bounds(pos: Vector2i) -> bool:
 	return pos.x >= 0 and pos.x < GRID_SIZE and pos.y >= 0 and pos.y < GRID_SIZE
 
 
+## Claims a grid position for the corporate speculator: registers it in the
+## AI's portfolio and paints a dirt lot so the player can see the land is taken.
+func claim_tile_for_speculator(grid_pos: Vector2i) -> void:
+	if _speculator.owned_tiles.has(grid_pos):
+		return
+	_speculator.owned_tiles.append(grid_pos)
+	_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TILE_DIRT_LOT))
+	_place_tile(grid_pos, GridCellData.TILE_DIRT_LOT)
+
+
 # ---- Input ----------------------------------------------------------------
 
 ## Track mouse position every frame to highlight the hovered cell.
@@ -240,6 +260,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	var existing: int = _grid.get_tile_type(grid_pos)
 	if existing == current_build_mode and current_build_mode != GridCellData.TileType.RESIDENTIAL_LOW:
+		return
+
+	# Speculator-owned land is off-limits — block any placement (or bulldoze).
+	if _speculator.owned_tiles.has(grid_pos):
+		prints("Blocked:", grid_pos, "is owned by the speculator!")
 		return
 
 	if current_build_mode == GridCellData.TileType.ROAD or current_build_mode == GridCellData.TileType.ROAD_CROSS:
@@ -537,7 +562,28 @@ func _get_local_workers(factory_pos: Vector2i) -> int:
 func _on_assessment_completed(net_income: int) -> void:
 	current_money += net_income
 	update_money_ui()
+	# Drive the corporate speculator AI on the same economic cadence.
+	_speculator.process_speculator_tick(_economy)
 	prints("Assessment: net:", net_income)
+
+
+## Handles speculator bankruptcy: liquidate its entire portfolio back to grass.
+func _on_speculator_bankrupt(owned: Array[Vector2i]) -> void:
+	for pos in owned:
+		_release_speculator_tile(pos)
+
+
+## Handles a single panic-sold tile: return it to the open market (grass).
+func _on_speculator_panic_sold(grid_pos: Vector2i) -> void:
+	_release_speculator_tile(grid_pos)
+
+
+## Removes the DIRT_LOT visual at `grid_pos`, returning the tile to empty
+## grass so the player can buy/build it again.
+func _release_speculator_tile(grid_pos: Vector2i) -> void:
+	_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
+	_place_tile(grid_pos, GridCellData.TileType.GRASS)
+	_placement.remove_building(grid_pos)
 
 
 ## Handles automatic density evolution (villa <-> apartment) driven by land value.
@@ -567,7 +613,6 @@ func update_money_ui() -> void:
 ## Restarts the current scene when the player clicks "Restart Game".
 func _on_restart_pressed() -> void:
 	get_tree().reload_current_scene()
-
 
 # ---- Bootstrap helper -------------------------------------------------------
 

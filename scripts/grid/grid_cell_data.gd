@@ -21,7 +21,12 @@ enum TileType {
 	SEED_HUB,
 	PARK,
 	SLUDGE,
+	DIRT_LOT,
 }
+
+## Alias for the corporate speculator's claimed-land marker (a dirt lot).
+## NOTE: uses value 18 — the legacy ID 7 is already taken by ROAD_CROSS.
+const TILE_DIRT_LOT: int = TileType.DIRT_LOT
 
 var tile_type: int = TileType.EMPTY
 var land_value_modifier: float = 0.0

@@ -1,13 +1,13 @@
 72322a848ab928aa5c89f0cb78209805
-::res://::1785708678
+::res://::1785775067
 camera_2d.gd::GDScript::8323770707353708446::1784826830::0::1::::<>Camera2D<><>0<>0<><>::
 export_presets.cfg::TextFile::-1::1785527046::0::1::::<><><>0<>0<><>::
 icon.svg::CompressedTexture2D::6571296950995647170::1784730529::1784730534::1::::<><><>0<>0<>79518ced503c4238221e579604853eb5<>res://.godot/imported/icon.svg-218a8f2b3041327d8a5756f3a245f83b.ctex::
 index.apple-touch-icon.png::CompressedTexture2D::1201817615025294737::1785527045::1785527063::1::::<><><>0<>0<>1ce4db395eb08721bb998333c29adcfb<>res://.godot/imported/index.apple-touch-icon.png-8085a11cc297d91deb55511843765958.ctex::
 index.icon.png::CompressedTexture2D::5451362321850939042::1785527045::1785527063::1::::<><><>0<>0<>c8cdb9ce873fc64febe2f800b16365bb<>res://.godot/imported/index.icon.png-5665fad188e88d1e882500a4376bfe02.ctex::
 index.png::CompressedTexture2D::5325046976111048648::1785527045::1785527063::1::::<><><>0<>0<>ab288bb603ef57e7f55c490b2b282c3d<>res://.godot/imported/index.png-5122033cac747157decad52589e2295c.ctex::
-node_2d.gd::GDScript::4907412386499542038::1785707174::0::1::::<>Node2D<><>0<>0<><>::
-node_2d.tscn::PackedScene::3346390940638964782::1785707743::0::1::::<><><>0<>0<><>::uid://cb6gmn75lx7k1::::res://node_2d.gd<>uid://cuqeft2e178fm::::res://scripts/grid/grid_manager.gd<>uid://smak4k6kjp7y::::res://assets/spekulant_tileset.tres<>uid://dqudj1jhyt70u::::res://camera_2d.gd<>uid://bk28x3us36jm4::::res://Ui/Switch01.png<>uid://bf3pjtvfgemr1::::res://Ui/Switch02.png<>uid://b3kd8a3v0jq4x::::res://assets/factory/FactoryC.png<>uid://bj1vpfanb80e8::::res://scripts/ui/music_attribution.gd<>uid://csvurd8y1u8vy::::res://assets/warehouse/warehouseBrownA.png<>uid://du16km40rfl4w::::res://assets/Park/gazebo.png<>uid://cy6eb70r07cp6::::res://assets/generated/sludge_pipe.png
+node_2d.gd::GDScript::4907412386499542038::1785709470::0::1::::<>Node2D<><>0<>0<><>::
+node_2d.tscn::PackedScene::3346390940638964782::1785709470::0::1::::<><><>0<>0<><>::uid://cb6gmn75lx7k1::::res://node_2d.gd<>uid://cuqeft2e178fm::::res://scripts/grid/grid_manager.gd<>uid://smak4k6kjp7y::::res://assets/spekulant_tileset.tres<>uid://dqudj1jhyt70u::::res://camera_2d.gd<>uid://bk28x3us36jm4::::res://Ui/Switch01.png<>uid://bf3pjtvfgemr1::::res://Ui/Switch02.png<>uid://b3kd8a3v0jq4x::::res://assets/factory/FactoryC.png<>uid://bj1vpfanb80e8::::res://scripts/ui/music_attribution.gd<>uid://csvurd8y1u8vy::::res://assets/warehouse/warehouseBrownA.png<>uid://du16km40rfl4w::::res://assets/Park/gazebo.png<>uid://cy6eb70r07cp6::::res://assets/generated/sludge_pipe.png
 README.md::TextFile::-1::1784829587::0::1::::<><><>0<>0<><>::
 ::res://addons/::1785169636
 ::res://addons/godot-git-plugin/::1785680348
@@ -36,7 +36,7 @@ vk_swiftshader_icd.json::JSON::-1::1785166814::0::1::::<><><>0<>0<><>::
 ::res://addons/ziva_agent/dist/::1785166814
 ::res://addons/ziva_agent/zivacode/::1785166813
 ::res://addons/ziva_agent/zivacode/linux_x86_64/::1785166814
-::res://assets/::1785707442
+::res://assets/::1785709467
 road01.png::CompressedTexture2D::7944348719548344846::1784730577::1784730577::1::::<><><>0<>0<>368db3c73a95baa72ccc24f120c8c177<>res://.godot/imported/road01.png-c4cbf9ac852eb8b9dbe91dfe861cc46a.ctex::
 road02.png::CompressedTexture2D::8808055586818556371::1784730577::1784730577::1::::<><><>0<>0<>6f1ab21ad6f60d5f320e6a1268a0b922<>res://.godot/imported/road02.png-616195eb20dded8db35f3247f64bf51a.ctex::
 road03.png::CompressedTexture2D::1859195482130456285::1784730577::1784730577::1::::<><><>0<>0<>f73bc9b893b77fb15a81aa0fdd898485<>res://.godot/imported/road03.png-d7b18c978c9278cb37aefb3f5a9814d0.ctex::
@@ -51,7 +51,7 @@ sidewalkE.png::CompressedTexture2D::6731962359513583745::1784730577::1784730577:
 sidewalkF.png::CompressedTexture2D::1892876282112130206::1784730577::1784730577::1::::<><><>0<>0<>4f10b75e30f68f239433af79ee5415d9<>res://.godot/imported/sidewalkF.png-97f83fab0694ff2e000fc030477cd52d.ctex::
 sidewalkG.png::CompressedTexture2D::8185121858653846288::1784730577::1784730577::1::::<><><>0<>0<>ea68c8d654921fc9232d813ab6dd64a0<>res://.godot/imported/sidewalkG.png-6de0e295c5463c4951b8f1c3fd89d6f5.ctex::
 sidewalkH.png::CompressedTexture2D::7196057752599644083::1784730577::1784730577::1::::<><><>0<>0<>5883b7387c9b2c7d7ae130d29681ff57<>res://.godot/imported/sidewalkH.png-d2424dfe162bd6c633a358a1cb4b2e49.ctex::
-spekulant_tileset.tres::TileSet::1288191116519781212::1785707442::0::1::::<><><>0<>0<><>::uid://dlk0nq3pvn1ym::::res://assets/tileGroundGrass.png<>uid://bptulrcgd1wh6::::res://assets/tileGroundDirt.png<>uid://vlj514jtlnju::::res://assets/road06.png<>uid://diwjwi4gtti6e::::res://assets/sidewalkA.png<>uid://b7pwiojq1sxx::::res://assets/tileGroundConcrete.png<>uid://cveouaoolfkyy::::res://assets/tileGroundAsphalt.png<>uid://qa17jrwm7yuh::::res://assets/tileGroundWater.png<>uid://dlgki6yhwu0f7::::res://assets/road01.png<>uid://dxqxnhjgenabj::::res://assets/road02.png<>uid://1quxbyq14hm8::::res://assets/road03.png<>uid://ced6kegqdpryb::::res://assets/road04.png<>uid://4y62fvlaydvv::::res://assets/road05.png
+spekulant_tileset.tres::TileSet::1288191116519781212::1785709467::0::1::::<><><>0<>0<><>::uid://dlk0nq3pvn1ym::::res://assets/tileGroundGrass.png<>uid://bptulrcgd1wh6::::res://assets/tileGroundDirt.png<>uid://vlj514jtlnju::::res://assets/road06.png<>uid://diwjwi4gtti6e::::res://assets/sidewalkA.png<>uid://b7pwiojq1sxx::::res://assets/tileGroundConcrete.png<>uid://cveouaoolfkyy::::res://assets/tileGroundAsphalt.png<>uid://qa17jrwm7yuh::::res://assets/tileGroundWater.png<>uid://dlgki6yhwu0f7::::res://assets/road01.png<>uid://dxqxnhjgenabj::::res://assets/road02.png<>uid://1quxbyq14hm8::::res://assets/road03.png<>uid://ced6kegqdpryb::::res://assets/road04.png<>uid://4y62fvlaydvv::::res://assets/road05.png
 tileGroundAsphalt.png::CompressedTexture2D::6255950370856216072::1784730577::1784730577::1::::<><><>0<>0<>5b61d01152a5e7c28a1746ff1c2bd66e<>res://.godot/imported/tileGroundAsphalt.png-de8fdbfbe30d980347c1ac777a2cee46.ctex::
 tileGroundConcrete.png::CompressedTexture2D::137199416370756573::1784730577::1784730577::1::::<><><>0<>0<>4f9a4d4619d439383fec9c2d070d73de<>res://.godot/imported/tileGroundConcrete.png-baa1ef8301977c3a31a67b010acd9ff0.ctex::
 tileGroundDirt.png::CompressedTexture2D::3479711395443236133::1784730577::1784730577::1::::<><><>0<>0<>0a7ac3037197cd569849418b2a5a6352<>res://.godot/imported/tileGroundDirt.png-5a072f06f9bfd7e2c188dff5a6fe8eae.ctex::
@@ -83,8 +83,8 @@ music_manager.gd::GDScript::5483545879275831569::1785681730::0::1::::MusicManage
 ::res://scripts/::1785707151
 building_placement.gd::GDScript::3184318042341092109::1785707151::0::1::::BuildingPlacement<>Node<><>0<>0<><>::
 ui_builder.gd::GDScript::568575224009026887::1785679808::0::1::::UIBuilder<>RefCounted<><>0<>0<><>::
-::res://scripts/economy/::1785706799
-economy_manager.gd::GDScript::5657674629298146342::1785706799::0::1::::EconomyManager<>Node<><>0<>0<><>::
+::res://scripts/economy/::1785709334
+economy_manager.gd::GDScript::5657674629298146342::1785709334::0::1::::EconomyManager<>Node<><>0<>0<><>::
 ::res://scripts/grid/::1785706799
 grid_cell_data.gd::GDScript::2110432986206513084::1785706799::0::1::::GridCellData<>RefCounted<><>0<>0<><>::
 grid_manager.gd::GDScript::6209901121023551002::1784745974::0::1::::GridManager<>Node<><>0<>0<><>::
