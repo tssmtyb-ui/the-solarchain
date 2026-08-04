@@ -14,26 +14,9 @@ extends Node2D
 ## Corporate speculator AI — its claimed land is off-limits to the player.
 var _speculator: SpeculatorManager
 
+## Placement controller — single owner of the player build pipeline.
+var _placement_controller: PlacementController
 
-## Maps GridCellData.TileType → { source_id, atlas_coords } for TileSet lookup.
-## Keeps the data model decoupled from the rendering layer.
-## Each texture is a single 512×256 isometric tile at atlas origin (0,0).
-const TILE_TYPE_MAP: Dictionary = {
-	GridCellData.TileType.GRASS:      { "source_id": 0,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.DIRT:       { "source_id": 1,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.ASPHALT:    { "source_id": 3,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.WATER:      { "source_id": 4,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.ROAD:       { "source_id": 5,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.ROAD_CROSS: { "source_id": 6,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.SIDEWALK:   { "source_id": 11, "coords": Vector2i(0, 0) },
-	GridCellData.TileType.RESIDENTIAL_LOW: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
-	GridCellData.TileType.RESIDENTIAL_HIGH: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
-	GridCellData.TileType.INDUSTRIAL:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
-	GridCellData.TileType.WAREHOUSE:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
-	GridCellData.TileType.PARK:       { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; gazebo spawned separately
-	GridCellData.TileType.SLUDGE:     { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; pipe spawned separately
-	GridCellData.TileType.DIRT_LOT:   { "source_id": 1,  "coords": Vector2i(0, 0) }, # dirt lot — speculator-owned land
-}
 
 ## Grid dimensions for the starting map.
 const GRID_SIZE: int = 10
@@ -50,42 +33,6 @@ var _hover_sprite: Sprite2D = Sprite2D.new()
 ## Sentinel value for the bulldoze tool (not a GridCellData tile type).
 const BULLDOZE: int = -1
 
-## Build costs deducted from current_money when placing tiles.
-const ROAD_COST: int = 10
-const FACTORY_COST: int = 100
-const WAREHOUSE_COST: int = 60
-const RESIDENTIAL_COST: int = 50
-const UPGRADE_COST: int = 150
-const PARK_COST: int = 50
-const SLUDGE_COST: int = 10
-
-## Per-cycle tile economics (applied in _on_assessment_completed).
-const ROAD_UPKEEP: int = 1
-
-## Land Value Tax constants.
-## A tile's economic value is determined by its Manhattan distance to the
-## nearest edge highway (outside world connection). Values drop by LVT_DROP_OFF
-## per tile of distance away from the highway, never below MIN_LAND_VALUE.
-const MAX_LAND_VALUE: int = 50
-const LVT_DROP_OFF: int = 3
-const MIN_LAND_VALUE: int = 5
-
-## Maximum land value a low-density villa can afford before being priced out.
-## Villas on land worth more than this provide 0 workers and 0 tax income.
-const MAX_VILLA_LAND_VALUE: int = 30
-
-## Worker radius constants for the factory labour dependency loop.
-## Factories scan for nearby housing within this Manhattan distance.
-const WORKER_RADIUS: int = 3
-## Workers required for a factory to operate at full efficiency.
-const REQUIRED_WORKERS: int = 2
-
-## Edge highway cells that are protected from bulldozing.
-const EDGE_HIGHWAY_CELLS: Array[Vector2i] = [
-	Vector2i(0, int(GRID_SIZE * 0.5)),
-	Vector2i(GRID_SIZE - 1, int(GRID_SIZE * 0.5)),
-]
-
 ## The tool mode the player is currently using (via UI toggle).
 ## EMPTY = no tool, BULLDOZE = demolition, otherwise a GridCellData.TileType.
 var current_build_mode: int = GridCellData.TileType.EMPTY
@@ -95,7 +42,6 @@ var current_money: int = 1000
 
 ## True once the player goes bankrupt (money drops below zero); blocks input.
 var is_game_over: bool = false
-
 
 func _ready() -> void:
 	assert(_grid != null, "GridManager node missing!")
@@ -116,6 +62,17 @@ func _ready() -> void:
 	add_child(_speculator)
 	_speculator.speculator_bankrupt.connect(_on_speculator_bankrupt)
 	_speculator.speculator_panic_sold.connect(_on_speculator_panic_sold)
+
+	# Placement controller — single owner of the player build pipeline
+	# (cost lookup, placement rules, money deduction, grid and sprite writes).
+	_placement_controller = PlacementController.new()
+	_placement_controller.name = "PlacementController"
+	_placement_controller.grid = _grid
+	_placement_controller.tilemap = _tilemap
+	_placement_controller.placement = _placement
+	_placement_controller.speculator = _speculator
+	_placement_controller.grid_size = GRID_SIZE
+	add_child(_placement_controller)
 
 	# Set up the hover-highlight sprite (a yellow diamond outline).
 	_hover_sprite.texture = HIGHLIGHT_TEXTURE
@@ -176,7 +133,7 @@ func _init_grass_grid() -> void:
 		for y in range(GRID_SIZE):
 			var cell := Vector2i(x, y)
 			_grid.set_tile(cell, GridCellData.new(GridCellData.TileType.GRASS))
-			_place_tile(cell, GridCellData.TileType.GRASS)
+			_placement_controller.place_tile(cell, GridCellData.TileType.GRASS)
 
 
 ## Places ROAD tiles at the east and west edges of the grid as highway connections.
@@ -187,18 +144,13 @@ func _spawn_edge_highways() -> void:
 
 	var west_cell := Vector2i(0, mid_y)
 	_grid.set_tile(west_cell, GridCellData.new(GridCellData.TileType.ROAD))
-	_place_tile(west_cell, GridCellData.TileType.ROAD)
+	_placement_controller.place_tile(west_cell, GridCellData.TileType.ROAD)
 
 	var east_cell := Vector2i(GRID_SIZE - 1, mid_y)
 	_grid.set_tile(east_cell, GridCellData.new(GridCellData.TileType.ROAD))
-	_place_tile(east_cell, GridCellData.TileType.ROAD)
+	_placement_controller.place_tile(east_cell, GridCellData.TileType.ROAD)
 
 	prints("Edge highways placed at", west_cell, "and", east_cell)
-
-
-## Returns true if `pos` lies within the GRID_SIZE × GRID_SIZE map bounds.
-func _within_bounds(pos: Vector2i) -> bool:
-	return pos.x >= 0 and pos.x < GRID_SIZE and pos.y >= 0 and pos.y < GRID_SIZE
 
 
 ## Claims a grid position for the corporate speculator: registers it in the
@@ -208,8 +160,7 @@ func claim_tile_for_speculator(grid_pos: Vector2i) -> void:
 		return
 	_speculator.owned_tiles.append(grid_pos)
 	_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TILE_DIRT_LOT))
-	_place_tile(grid_pos, GridCellData.TILE_DIRT_LOT)
-
+	_placement_controller.place_tile(grid_pos, GridCellData.TILE_DIRT_LOT)
 
 # ---- Input ----------------------------------------------------------------
 
@@ -258,154 +209,31 @@ func _unhandled_input(event: InputEvent) -> void:
 		prints("No tool selected — toggle Road or Factory button first.")
 		return
 
+	# Delegate the whole build pipeline (cost lookup, placement rules, money
+	# deduction, grid writes, sprite spawning) to the placement controller.
+	# It returns the new balance on success, or { ok: false, reason } with
+	# the money untouched on rejection ("" reason = silent no-op).
 	var existing: int = _grid.get_tile_type(grid_pos)
-	if existing == current_build_mode and current_build_mode != GridCellData.TileType.RESIDENTIAL_LOW:
-		return
-
-	# Speculator-owned land is off-limits — block any placement (or bulldoze).
-	if _speculator.owned_tiles.has(grid_pos):
-		prints("Blocked:", grid_pos, "is owned by the speculator!")
-		return
-
-	if current_build_mode == GridCellData.TileType.ROAD or current_build_mode == GridCellData.TileType.ROAD_CROSS:
-		if current_money < ROAD_COST:
-			prints("Not enough money!")
-			return
-		current_money -= ROAD_COST
-		update_money_ui()
-		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-		_place_tile(grid_pos, current_build_mode)
-		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
-		return
-
-	if current_build_mode == GridCellData.TileType.INDUSTRIAL:
-		var cardinal: Array[Vector2i] = [Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0)]
-		var found_road := false
-		for off in cardinal:
-			var adj: Vector2i = Vector2i(grid_pos.x + off.x, grid_pos.y + off.y)
-			if not _within_bounds(adj):
-				continue
-			var adj_type: int = _grid.get_tile_type(adj)
-			if adj_type == GridCellData.TileType.ROAD or adj_type == GridCellData.TileType.ROAD_CROSS:
-				found_road = true
-				break
-		if not found_road:
-			prints("Blocked: Factories must be built next to a road!")
-			return
-		if current_money < FACTORY_COST:
-			prints("Not enough money!")
-			return
-		current_money -= FACTORY_COST
-		update_money_ui()
-		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-		_place_tile(grid_pos, current_build_mode)
-		_placement.spawn_building(grid_pos, current_build_mode)
-		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
-		return
-
-	if current_build_mode == GridCellData.TileType.WAREHOUSE:
-		var cardinal: Array[Vector2i] = [Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0)]
-		var found_road := false
-		for off in cardinal:
-			var adj: Vector2i = Vector2i(grid_pos.x + off.x, grid_pos.y + off.y)
-			if not _within_bounds(adj):
-				continue
-			var adj_type: int = _grid.get_tile_type(adj)
-			if adj_type == GridCellData.TileType.ROAD or adj_type == GridCellData.TileType.ROAD_CROSS:
-				found_road = true
-				break
-		if not found_road:
-			prints("Blocked: Warehouses must be built next to a road!")
-			return
-		if current_money < WAREHOUSE_COST:
-			prints("Not enough money!")
-			return
-		current_money -= WAREHOUSE_COST
-		update_money_ui()
-		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-		_place_tile(grid_pos, current_build_mode)
-		_placement.spawn_building(grid_pos, current_build_mode)
-		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
-		return
-
-	if current_build_mode == GridCellData.TileType.PARK:
-		if current_money < PARK_COST:
-			prints("Not enough money!")
-			return
-		current_money -= PARK_COST
-		update_money_ui()
-		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-		_place_tile(grid_pos, current_build_mode)
-		_placement.spawn_building(grid_pos, current_build_mode)
-		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
-		return
-
-	if current_build_mode == GridCellData.TileType.SLUDGE:
-		if current_money < SLUDGE_COST:
-			prints("Not enough money!")
-			return
-		current_money -= SLUDGE_COST
-		update_money_ui()
-		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-		_place_tile(grid_pos, current_build_mode)
-		_placement.spawn_building(grid_pos, current_build_mode)
-		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
-		return
-
-	if current_build_mode == GridCellData.TileType.RESIDENTIAL_LOW:
-		# Upgrade: clicking on an existing house upgrades it to an apartment.
-		if existing == GridCellData.TileType.RESIDENTIAL_LOW:
-			if current_money < UPGRADE_COST:
-				prints("Not enough money for upgrade!")
-				return
-			current_money -= UPGRADE_COST
-			update_money_ui()
-			_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.RESIDENTIAL_HIGH))
-			_place_tile(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
-			_placement.spawn_building(grid_pos, GridCellData.TileType.RESIDENTIAL_HIGH)
-			prints("Upgraded to RESIDENTIAL_HIGH at", grid_pos)
-			return
-
-		# Normal house placement on any non-residential tile.
-		if current_money < RESIDENTIAL_COST:
-			prints("Not enough money!")
-			return
-		current_money -= RESIDENTIAL_COST
-		update_money_ui()
-		_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-		_place_tile(grid_pos, current_build_mode)
-		_placement.spawn_building(grid_pos, current_build_mode)
-		prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
-		return
-
-	# --- Bulldoze: demolish player-built tiles back to grass ---
+	var result: Dictionary
 	if current_build_mode == BULLDOZE:
-		if EDGE_HIGHWAY_CELLS.has(grid_pos):
-			prints("Cannot demolish edge highway connection.")
-			return
+		result = _placement_controller.attempt_bulldoze(grid_pos, current_money)
+	else:
+		result = _placement_controller.attempt_build(current_build_mode, grid_pos, current_money)
 
-		if existing == GridCellData.TileType.ROAD \
-		   or existing == GridCellData.TileType.ROAD_CROSS \
-		   or existing == GridCellData.TileType.INDUSTRIAL \
-		   or existing == GridCellData.TileType.WAREHOUSE \
-		   or existing == GridCellData.TileType.RESIDENTIAL_LOW \
-		   or existing == GridCellData.TileType.RESIDENTIAL_HIGH \
-		   or existing == GridCellData.TileType.PARK \
-		   or existing == GridCellData.TileType.SLUDGE:
-			# Destroy any building sprite attached to this tile.
-			_placement.remove_building(grid_pos)
-
-			# Reset the tile to grass in data model + tilemap.
-			_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
-			_place_tile(grid_pos, GridCellData.TileType.GRASS)
-			prints("Demolished", GridCellData.TileType.keys()[existing], "at", grid_pos)
-		else:
-			prints("Nothing to demolish at", grid_pos)
+	if not result.ok:
+		if result.reason != "":
+			prints(result.reason)
 		return
 
-	_grid.set_tile(grid_pos, GridCellData.new(current_build_mode))
-	_place_tile(grid_pos, current_build_mode)
-	prints("Placed", GridCellData.TileType.keys()[current_build_mode], "at", grid_pos)
+	current_money = result.money
+	update_money_ui()
+
+	if result.placed_type == GridCellData.TileType.GRASS:
+		prints("Demolished", GridCellData.TileType.keys()[existing], "at", grid_pos)
+	elif existing == GridCellData.TileType.RESIDENTIAL_LOW and result.placed_type == GridCellData.TileType.RESIDENTIAL_HIGH:
+		prints("Upgraded to RESIDENTIAL_HIGH at", grid_pos)
+	else:
+		prints("Placed", GridCellData.TileType.keys()[result.placed_type], "at", grid_pos)
 
 ## Called when the Road toggle button is switched on/off.
 ## ON  → set build mode to ROAD, show Switch01 (active).
@@ -422,7 +250,6 @@ func _on_road_toggle_toggled(toggled_on: bool) -> void:
 		btn.texture_normal = preload("res://Ui/Switch02.png")
 		prints("Build mode: OFF")
 
-
 ## Called when the Factory toggle button is switched on/off.
 ## ON  → set build mode to INDUSTRIAL, show warehouse texture (active).
 ## OFF → reset build mode to EMPTY, restore inactive texture.
@@ -438,7 +265,6 @@ func _on_factory_toggle_toggled(toggled_on: bool) -> void:
 		btn.texture_normal = preload("res://assets/factory/FactoryC.png")
 		prints("Build mode: OFF")
 
-
 ## Called when the Warehouse toggle button is switched on/off.
 ## ON  → set build mode to WAREHOUSE.
 ## OFF → reset build mode to EMPTY.
@@ -451,7 +277,6 @@ func _on_warehouse_toggle_toggled(toggled_on: bool) -> void:
 		current_build_mode = GridCellData.TileType.EMPTY
 		prints("Build mode: OFF")
 
-
 ## Called when the Residential toggle button is switched on/off.
 ## ON  → set build mode to RESIDENTIAL_LOW.
 ## OFF → reset build mode to EMPTY.
@@ -463,7 +288,6 @@ func _on_residential_toggle_toggled(toggled_on: bool) -> void:
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
 		prints("Build mode: OFF")
-
 
 ## Called when the Bulldoze toggle button is switched on/off.
 ## ON  → set build mode to BULLDOZE, show Switch01 (active).
@@ -481,7 +305,6 @@ func _on_bulldoze_toggle_toggled(toggled_on: bool) -> void:
 		btn.texture_normal = preload("res://Ui/Switch02.png")
 		prints("Build mode: OFF")
 
-
 ## Called when the Park toggle button is switched on/off.
 ## ON  → set build mode to PARK. OFF → reset build mode to EMPTY.
 func _on_park_toggle_toggled(toggled_on: bool) -> void:
@@ -492,7 +315,6 @@ func _on_park_toggle_toggled(toggled_on: bool) -> void:
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
 		prints("Build mode: OFF")
-
 
 ## Called when the Sludge toggle button is switched on/off.
 ## ON  → set build mode to SLUDGE. OFF → reset build mode to EMPTY.
@@ -505,7 +327,6 @@ func _on_sludge_toggle_toggled(toggled_on: bool) -> void:
 		current_build_mode = GridCellData.TileType.EMPTY
 		prints("Build mode: OFF")
 
-
 ## Unpresses every other build-mode toggle so only `except_name` stays active.
 ## The ButtonGroup already handles visual exclusivity; this keeps state in sync
 ## when modes are switched programmatically (e.g. via hotkeys).
@@ -514,51 +335,6 @@ func _unpress_other_toggles(except_name: String) -> void:
 		if child is TextureButton and child.name != except_name and child.button_pressed:
 			child.set_pressed_no_signal(false)
 
-
-## Returns the Land Value of a grid position based on Manhattan distance to the
-## nearest edge highway (outside-world connection).
-##
-## Tiles closer to the highway fetch a higher value; remote land drops toward
-## MIN_LAND_VALUE. The formula: MAX_LAND_VALUE - (shortest_distance * LVT_DROP_OFF),
-## clamped to never go below MIN_LAND_VALUE.
-func get_land_value(grid_pos: Vector2i) -> int:
-	var mid_y: int = int(GRID_SIZE * 0.5)
-
-	var west := Vector2i(0, mid_y)
-	var east := Vector2i(GRID_SIZE - 1, mid_y)
-
-	var dist_west: int = abs(grid_pos.x - west.x) + abs(grid_pos.y - west.y)
-	var dist_east: int = abs(grid_pos.x - east.x) + abs(grid_pos.y - east.y)
-	var shortest: int = mini(dist_west, dist_east)
-
-	var raw: int = MAX_LAND_VALUE - (shortest * LVT_DROP_OFF)
-	return clampi(raw, MIN_LAND_VALUE, MAX_LAND_VALUE)
-
-
-## Scans within WORKER_RADIUS of a factory position and counts nearby workers.
-## RESIDENTIAL_LOW tiles contribute 1 worker, RESIDENTIAL_HIGH tiles contribute 3.
-## Uses Manhattan distance (abs(dx) + abs(dy) <= WORKER_RADIUS) for the scan.
-func _get_local_workers(factory_pos: Vector2i) -> int:
-	var count: int = 0
-	for dx in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
-		for dy in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
-			if abs(dx) + abs(dy) > WORKER_RADIUS:
-				continue
-			var pos: Vector2i = Vector2i(factory_pos.x + dx, factory_pos.y + dy)
-			if pos.x < 0 or pos.x >= GRID_SIZE or pos.y < 0 or pos.y >= GRID_SIZE:
-				continue
-			var tile_type: int = _grid.get_tile_type(pos)
-			if tile_type == GridCellData.TileType.RESIDENTIAL_LOW:
-				# Villa is priced out if land value exceeds the threshold.
-				if get_land_value(pos) > MAX_VILLA_LAND_VALUE:
-					prints("Villa at", pos, "abandoned! Land value too high.")
-				else:
-					count += 1
-			elif tile_type == GridCellData.TileType.RESIDENTIAL_HIGH:
-				count += 3
-	return count
-
-
 func _on_assessment_completed(net_income: int) -> void:
 	current_money += net_income
 	update_money_ui()
@@ -566,25 +342,21 @@ func _on_assessment_completed(net_income: int) -> void:
 	_speculator.process_speculator_tick(_economy)
 	prints("Assessment: net:", net_income)
 
-
 ## Handles speculator bankruptcy: liquidate its entire portfolio back to grass.
 func _on_speculator_bankrupt(owned: Array[Vector2i]) -> void:
 	for pos in owned:
 		_release_speculator_tile(pos)
 
-
 ## Handles a single panic-sold tile: return it to the open market (grass).
 func _on_speculator_panic_sold(grid_pos: Vector2i) -> void:
 	_release_speculator_tile(grid_pos)
-
 
 ## Removes the DIRT_LOT visual at `grid_pos`, returning the tile to empty
 ## grass so the player can buy/build it again.
 func _release_speculator_tile(grid_pos: Vector2i) -> void:
 	_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
-	_place_tile(grid_pos, GridCellData.TileType.GRASS)
+	_placement_controller.place_tile(grid_pos, GridCellData.TileType.GRASS)
 	_placement.remove_building(grid_pos)
-
 
 ## Handles automatic density evolution (villa <-> apartment) driven by land value.
 ## The EconomyManager emits this when a residential tile crosses a threshold.
@@ -592,7 +364,7 @@ func _on_residential_evolution(grid_pos: Vector2i, new_tile_type: int) -> void:
 	# Update the data model and ground tile, then swap the building sprite.
 	# spawn_building() already queue_frees any existing sprite at this cell.
 	_grid.set_tile(grid_pos, GridCellData.new(new_tile_type))
-	_place_tile(grid_pos, new_tile_type)
+	_placement_controller.place_tile(grid_pos, new_tile_type)
 	_placement.spawn_building(grid_pos, new_tile_type)
 	prints("Evolved tile at", grid_pos, "->", GridCellData.TileType.keys()[new_tile_type])
 
@@ -636,12 +408,5 @@ func _create_placement_manager() -> BuildingPlacement:
 	add_child(bp)
 	return bp
 
-## Look up the TileSet source/coords for a GridCellData tile type and place it.
-func _place_tile(_cell: Vector2i, tile_type: int) -> void:
-	var entry: Dictionary = TILE_TYPE_MAP.get(tile_type, {})
-	if entry.is_empty():
-		push_warning("No TileSet mapping for tile type ", tile_type)
-		return
-	var source_id: int = entry.source_id
-	var atlas_coords: Vector2i = entry.coords
-	_tilemap.set_cell(_cell, source_id, atlas_coords)
+## All ground-tile writes are delegated to _placement_controller.place_tile(),
+## which owns the TileSet mapping (see placement_controller.gd TILE_TYPE_MAP).

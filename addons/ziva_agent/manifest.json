@@ -1,7 +1,7 @@
 {
-  "version": "v3.1.1",
+  "version": "v3.1.2",
   "godotCppVersion": "v4.2.0",
   "serverUrl": "https://ziva.sh",
   "branch": "main",
-  "commit": "7263f80"
+  "commit": "b02d8bd"
 }
