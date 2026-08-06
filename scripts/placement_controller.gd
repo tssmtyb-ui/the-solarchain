@@ -31,6 +31,9 @@ const BUILD_COSTS: Dictionary = {
 ## Cost to upgrade an existing villa (RESIDENTIAL_LOW) to an apartment.
 const UPGRADE_COST: int = 150
 
+## Massive premium the player pays to seize a speculator-owned DIRT_LOT back.
+const HOSTILE_BUYOUT_PREMIUM: int = 500
+
 ## Tile types the bulldozer may demolish back to grass.
 const DEMOLISHABLE_TILES: Array[int] = [
 	GridCellData.TileType.ROAD,
@@ -93,6 +96,14 @@ const TILE_TYPE_MAP: Dictionary = {
 	GridCellData.TileType.SLUDGE:     { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; pipe spawned separately
 	GridCellData.TileType.DIRT_LOT:   { "source_id": 1,  "coords": Vector2i(0, 0) }, # dirt lot — speculator-owned land
 }
+
+# ---------------------------------------------------------------------------
+#   Signals
+# ---------------------------------------------------------------------------
+
+## Emitted when the player successfully demolishes a public PARK. The root scene
+## forwards this to the economy, which triggers a global industrial strike.
+signal park_demolished
 
 # ---------------------------------------------------------------------------
 #   Public API
@@ -174,7 +185,35 @@ func attempt_bulldoze(grid_pos: Vector2i, current_money: int) -> Dictionary:
 	grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
 	place_tile(grid_pos, GridCellData.TileType.GRASS)
 
+	# Demolishing a public park provokes a global industrial strike (0% refund
+	# is already the default — bulldozing returns money unchanged).
+	if existing == GridCellData.TileType.PARK:
+		park_demolished.emit()
+
 	return { "ok": true, "money": current_money, "placed_type": GridCellData.TileType.GRASS }
+
+
+## Hostile buyout: the player spends HOSTILE_BUYOUT_PREMIUM to seize a
+## speculator-owned DIRT_LOT. Deducts the premium, forces the speculator to
+## sell the tile, and returns the tile as a blank GRASS lot (the caller paints
+## it). Same result contract as attempt_build()/attempt_bulldoze().
+##
+##   SUCCESS: { "ok": true, "money": <new balance>, "placed_type": GRASS }
+##   FAILURE: { "ok": false, "money": <unchanged>, "reason": "<message>" }
+func attempt_hostile_buyout(grid_pos: Vector2i, current_money: int) -> Dictionary:
+	if speculator == null:
+		return _fail(current_money, "No speculator in play.")
+
+	if not speculator.owned_tiles.has(grid_pos):
+		return _fail(current_money, "Not a speculator-owned tile.")
+
+	if current_money < HOSTILE_BUYOUT_PREMIUM:
+		return _fail(current_money, "Not enough money for a hostile buyout ($%d)!" % HOSTILE_BUYOUT_PREMIUM)
+
+	var new_money: int = current_money - HOSTILE_BUYOUT_PREMIUM
+	speculator.force_sell_tile(grid_pos)
+
+	return { "ok": true, "money": new_money, "placed_type": GridCellData.TileType.GRASS }
 
 
 ## Looks up the TileSet source/coords for a GridCellData tile type and paints

@@ -5,16 +5,19 @@ extends Node
 ## crash. Isolated from the player economy loop; the root scene drives it via
 ## `process_speculator_tick()` on its own cadence.
 ##
-## Later phases add the purchase half of the loop (scan for BUY_THRESHOLD).
-## This file only owns the AI's state and decisions.
+## The root scene drives it via `scan_and_buy_land()` (purchase half) and
+## `process_speculator_tick()` (LVT + panic/bankruptcy) on its own cadence.
+## This file owns the AI's state and decisions.
 
 # ---------------------------------------------------------------------------
 #   AI behavior thresholds
 # ---------------------------------------------------------------------------
 
-## Buys empty land when land value rises above this. Purchase scanning is
-## wired by the root scene in a later phase — this is the AI's trigger.
+## Buys empty land when land value rises above this.
 const BUY_THRESHOLD: int = 25
+
+## Monetary cost the speculator pays to claim a prime tile.
+const CLAIM_COST: int = 100
 
 ## Sells land back whenever a held tile's land value crashes below this.
 const PANIC_SELL_THRESHOLD: int = 15
@@ -41,6 +44,10 @@ signal speculator_bankrupt(owned_tiles: Array[Vector2i])
 
 ## Emitted when a single held tile is panic-sold back to the open market.
 signal speculator_panic_sold(grid_pos: Vector2i)
+
+## Emitted when the speculator pays CLAIM_COST to claim a prime GRASS tile.
+## The root scene paints the DIRT_LOT marker on the map in response.
+signal speculator_claimed_tile(grid_pos: Vector2i)
 
 # ---------------------------------------------------------------------------
 #   Logic
@@ -69,3 +76,34 @@ func process_speculator_tick(economy_manager_ref: EconomyManager) -> void:
 		if economy_manager_ref.get_land_value(pos) < PANIC_SELL_THRESHOLD:
 			owned_tiles.erase(pos)
 			speculator_panic_sold.emit(pos)
+
+
+## Scans the grid for empty GRASS land above BUY_THRESHOLD and claims the single
+## highest-value tile it can afford (CLAIM_COST). Emits speculator_claimed_tile
+## on success so the root scene can paint the DIRT_LOT marker.
+func scan_and_buy_land(grid_manager_ref: GridManager, economy_manager_ref: EconomyManager) -> void:
+	var best_pos: Vector2i = Vector2i(-1, -1)
+	var best_value: int = 0
+
+	for pos in grid_manager_ref.get_all_occupied_positions():
+		if grid_manager_ref.get_tile_type(pos) != GridCellData.TileType.GRASS:
+			continue
+		var value: int = economy_manager_ref.get_land_value(pos)
+		if value > BUY_THRESHOLD and value > best_value:
+			best_value = value
+			best_pos = pos
+
+	# Claim the best prime tile if we found one and can afford it.
+	if best_pos != Vector2i(-1, -1) and speculator_cash >= CLAIM_COST:
+		speculator_cash -= CLAIM_COST
+		owned_tiles.append(best_pos)
+		speculator_claimed_tile.emit(best_pos)
+
+
+## Hostile buyout: the player seizes `pos` from the AI. Removes it from the
+## portfolio and pays the speculator the flat buyout premium (BUYOUT_GAIN) in
+## cash. Returns true if the tile was actually held and released.
+func force_sell_tile(pos: Vector2i) -> void:
+	if owned_tiles.has(pos):
+		owned_tiles.erase(pos)
+		speculator_cash += 500

@@ -62,6 +62,7 @@ func _ready() -> void:
 	add_child(_speculator)
 	_speculator.speculator_bankrupt.connect(_on_speculator_bankrupt)
 	_speculator.speculator_panic_sold.connect(_on_speculator_panic_sold)
+	_speculator.speculator_claimed_tile.connect(claim_tile_for_speculator)
 
 	# Placement controller — single owner of the player build pipeline
 	# (cost lookup, placement rules, money deduction, grid and sprite writes).
@@ -73,6 +74,8 @@ func _ready() -> void:
 	_placement_controller.speculator = _speculator
 	_placement_controller.grid_size = GRID_SIZE
 	add_child(_placement_controller)
+	# Demolishing a public park triggers a global industrial strike.
+	_placement_controller.park_demolished.connect(_economy.trigger_industrial_strike)
 
 	# Set up the hover-highlight sprite (a yellow diamond outline).
 	_hover_sprite.texture = HIGHLIGHT_TEXTURE
@@ -209,6 +212,23 @@ func _unhandled_input(event: InputEvent) -> void:
 		prints("No tool selected — toggle Road or Factory button first.")
 		return
 
+	# Hostile buyout: clicking a speculator-owned DIRT_LOT intercepts the build
+	# pipeline — spend HOSTILE_BUYOUT_PREMIUM to seize the land back from the AI.
+	if _speculator.owned_tiles.has(grid_pos) or _grid.get_tile_type(grid_pos) == GridCellData.TileType.DIRT_LOT:
+		var lot_result: Dictionary = _placement_controller.attempt_hostile_buyout(grid_pos, current_money)
+		if not lot_result.ok:
+			if lot_result.reason != "":
+				prints(lot_result.reason)
+			return
+		current_money = lot_result.money
+		update_money_ui()
+		# Release the claimed tile back to a blank GRASS lot.
+		_grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
+		_placement_controller.place_tile(grid_pos, GridCellData.TileType.GRASS)
+		_placement.remove_building(grid_pos)
+		prints("Hostile buyout of speculator land at", grid_pos)
+		return
+
 	# Delegate the whole build pipeline (cost lookup, placement rules, money
 	# deduction, grid writes, sprite spawning) to the placement controller.
 	# It returns the new balance on success, or { ok: false, reason } with
@@ -340,6 +360,7 @@ func _on_assessment_completed(net_income: int) -> void:
 	update_money_ui()
 	# Drive the corporate speculator AI on the same economic cadence.
 	_speculator.process_speculator_tick(_economy)
+	_speculator.scan_and_buy_land(_grid, _economy)
 	prints("Assessment: net:", net_income)
 
 ## Handles speculator bankruptcy: liquidate its entire portfolio back to grass.

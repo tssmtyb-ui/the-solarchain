@@ -1,3 +1,6 @@
 res://node_2d.tscn
+res://scripts/economy/economy_manager.gd
 res://node_2d.gd
+res://scripts/economy/speculator_manager.gd
+res://scripts/placement_controller.gd
 res://assets/spekulant_tileset.tres
