@@ -8,7 +8,9 @@ extends Node2D
 @onready var _tilemap: TileMapLayer = $TileMapLayer
 @onready var _hover_layer: Node2D = $HoverLayer
 @onready var _economy: EconomyManager = _create_economy_manager()
-@onready var _money_label: Label = $UI/MoneyLabel
+@onready var _money_label: Label = $UI/TopBar/HBoxContainer/MoneyLabel
+@onready var _dividend_slider: HSlider = $UI/TopBar/HBoxContainer/DividendBox/DividendSlider
+@onready var _dividend_label: Label = $UI/TopBar/HBoxContainer/DividendBox/DividendLabel
 @onready var _placement: BuildingPlacement = _create_placement_manager()
 
 ## Corporate speculator AI — its claimed land is off-limits to the player.
@@ -43,6 +45,9 @@ var current_money: int = 1000
 ## True once the player goes bankrupt (money drops below zero); blocks input.
 var is_game_over: bool = false
 
+## The Citizen's Dividend live trade-off label (resolved from the scene's TopBar
+## via @onready above).
+
 func _ready() -> void:
 	assert(_grid != null, "GridManager node missing!")
 	assert(_tilemap != null, "TileMapLayer node missing!")
@@ -64,6 +69,10 @@ func _ready() -> void:
 	_speculator.speculator_panic_sold.connect(_on_speculator_panic_sold)
 	_speculator.speculator_claimed_tile.connect(claim_tile_for_speculator)
 
+	# Pipe/logistics network — cached BFS connectivity for SLUDGE hookups.
+	var pipe_network: PipeNetworkManager = _create_pipe_network_manager()
+	_economy.pipe_network = pipe_network
+
 	# Placement controller — single owner of the player build pipeline
 	# (cost lookup, placement rules, money deduction, grid and sprite writes).
 	_placement_controller = PlacementController.new()
@@ -72,6 +81,7 @@ func _ready() -> void:
 	_placement_controller.tilemap = _tilemap
 	_placement_controller.placement = _placement
 	_placement_controller.speculator = _speculator
+	_placement_controller.pipe_network = pipe_network
 	_placement_controller.grid_size = GRID_SIZE
 	add_child(_placement_controller)
 	# Demolishing a public park triggers a global industrial strike.
@@ -83,32 +93,32 @@ func _ready() -> void:
 	_hover_sprite.z_index = 100  # always render on top
 	_hover_layer.add_child(_hover_sprite)
 
-	# Connect UI toggle buttons for build modes.
-	var road_toggle: TextureButton = $UI/RoadToggle
+	# Connect UI toggle buttons for build modes (all live in the bottom BuildBar dock).
+	var road_toggle: TextureButton = $UI/BuildBar/HBoxContainer/RoadToggle
 	road_toggle.tooltip_text = "Build Road"
 	road_toggle.toggled.connect(_on_road_toggle_toggled)
 
-	var factory_toggle: TextureButton = $UI/FactoryToggle
+	var factory_toggle: TextureButton = $UI/BuildBar/HBoxContainer/FactoryToggle
 	factory_toggle.tooltip_text = "Build Factory"
 	factory_toggle.toggled.connect(_on_factory_toggle_toggled)
 
-	var warehouse_toggle: TextureButton = $UI/WarehouseToggle
+	var warehouse_toggle: TextureButton = $UI/BuildBar/HBoxContainer/WarehouseToggle
 	warehouse_toggle.tooltip_text = "Build Warehouse"
 	warehouse_toggle.toggled.connect(_on_warehouse_toggle_toggled)
 
-	var residential_toggle: TextureButton = $UI/ResidentialToggle
+	var residential_toggle: TextureButton = $UI/BuildBar/HBoxContainer/ResidentialToggle
 	residential_toggle.tooltip_text = "Build Residential"
 	residential_toggle.toggled.connect(_on_residential_toggle_toggled)
 
-	var park_toggle: TextureButton = $UI/ParkToggle
+	var park_toggle: TextureButton = $UI/BuildBar/HBoxContainer/ParkToggle
 	park_toggle.tooltip_text = "Build Park"
 	park_toggle.toggled.connect(_on_park_toggle_toggled)
 
-	var sludge_toggle: TextureButton = $UI/SludgeToggle
+	var sludge_toggle: TextureButton = $UI/BuildBar/HBoxContainer/SludgeToggle
 	sludge_toggle.tooltip_text = "Build Sludge Line"
 	sludge_toggle.toggled.connect(_on_sludge_toggle_toggled)
 
-	var bulldoze_toggle: TextureButton = $UI/BulldozeToggle
+	var bulldoze_toggle: TextureButton = $UI/BuildBar/HBoxContainer/BulldozeToggle
 	bulldoze_toggle.tooltip_text = "Bulldozer (Demolish)"
 	bulldoze_toggle.toggled.connect(_on_bulldoze_toggle_toggled)
 
@@ -124,6 +134,13 @@ func _ready() -> void:
 
 	# --- Build programmatic UI overlays (credits + game-over screen) ---
 	UIBuilder.new().build_ui($UI, _on_restart_pressed)
+
+	# Citizen's Dividend Policy — the slider + label now live in the scene's TopBar
+	# (see node_2d.tscn) and are resolved via @onready refs. Wire the live
+	# trade-off behaviour here: refresh on drag AND whenever factory income changes.
+	_update_dividend_label(_dividend_slider.value)
+	_dividend_slider.value_changed.connect(_on_dividend_changed)
+	_economy.assessment_completed.connect(_on_assessment_refresh_dividend)
 
 	update_money_ui()
 
@@ -194,10 +211,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_5:
-				$UI/ParkToggle.set_pressed(true)
+				$UI/BuildBar/HBoxContainer/ParkToggle.set_pressed(true)
 				return
 			KEY_6:
-				$UI/SludgeToggle.set_pressed(true)
+				$UI/BuildBar/HBoxContainer/SludgeToggle.set_pressed(true)
 				return
 
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
@@ -251,6 +268,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if result.placed_type == GridCellData.TileType.GRASS:
 		prints("Demolished", GridCellData.TileType.keys()[existing], "at", grid_pos)
 	elif existing == GridCellData.TileType.RESIDENTIAL_LOW and result.placed_type == GridCellData.TileType.RESIDENTIAL_HIGH:
+		# Arm the evolution buffer so the fresh upgrade can't be auto-downgraded
+		# by a land-value fluctuation on the very next assessment.
+		_economy.stamp_evolution_cooldown(grid_pos)
 		prints("Upgraded to RESIDENTIAL_HIGH at", grid_pos)
 	else:
 		prints("Placed", GridCellData.TileType.keys()[result.placed_type], "at", grid_pos)
@@ -259,7 +279,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## ON  → set build mode to ROAD, show Switch01 (active).
 ## OFF → reset build mode to EMPTY, show Switch02 (inactive).
 func _on_road_toggle_toggled(toggled_on: bool) -> void:
-	var btn: TextureButton = $UI/RoadToggle
+	var btn: TextureButton = $UI/BuildBar/HBoxContainer/RoadToggle
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.ROAD
 		btn.texture_normal = preload("res://Ui/Switch01.png")
@@ -274,7 +294,7 @@ func _on_road_toggle_toggled(toggled_on: bool) -> void:
 ## ON  → set build mode to INDUSTRIAL, show warehouse texture (active).
 ## OFF → reset build mode to EMPTY, restore inactive texture.
 func _on_factory_toggle_toggled(toggled_on: bool) -> void:
-	var btn: TextureButton = $UI/FactoryToggle
+	var btn: TextureButton = $UI/BuildBar/HBoxContainer/FactoryToggle
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.INDUSTRIAL
 		btn.texture_normal = preload("res://assets/factory/FactoryC.png")
@@ -314,7 +334,7 @@ func _on_residential_toggle_toggled(toggled_on: bool) -> void:
 ## OFF → reset build mode to EMPTY, show Switch02 (inactive).
 ## Unpresses Road and Factory toggles when activated (mutual exclusion).
 func _on_bulldoze_toggle_toggled(toggled_on: bool) -> void:
-	var btn: TextureButton = $UI/BulldozeToggle
+	var btn: TextureButton = $UI/BuildBar/HBoxContainer/BulldozeToggle
 	if toggled_on:
 		current_build_mode = BULLDOZE
 		btn.texture_normal = preload("res://Ui/Switch01.png")
@@ -351,7 +371,7 @@ func _on_sludge_toggle_toggled(toggled_on: bool) -> void:
 ## The ButtonGroup already handles visual exclusivity; this keeps state in sync
 ## when modes are switched programmatically (e.g. via hotkeys).
 func _unpress_other_toggles(except_name: String) -> void:
-	for child in $UI.get_children():
+	for child in $UI/BuildBar/HBoxContainer.get_children():
 		if child is TextureButton and child.name != except_name and child.button_pressed:
 			child.set_pressed_no_signal(false)
 
@@ -407,6 +427,33 @@ func update_money_ui() -> void:
 func _on_restart_pressed() -> void:
 	get_tree().reload_current_scene()
 
+
+## Pushes the slider value to the economy and refreshes the trade-off label.
+func _on_dividend_changed(value: float) -> void:
+	_economy.set_dividend_percent(value)
+	_update_dividend_label(value)
+
+
+## Refreshes the trade-off label after each assessment so the displayed per-tick
+## cost stays current as factory income changes between drags.
+func _on_assessment_refresh_dividend(_net_income: int) -> void:
+	_update_dividend_label(_economy.dividend_percent)
+
+
+## Renders the live economic trade-off for a given dividend % (0–100).
+func _update_dividend_label(value: float) -> void:
+	if _dividend_label == null:
+		return
+	var boost_percent: int = int((_economy.get_factory_boost_multiplier(value) - 1.0) * 100.0)
+	if value <= 0.0:
+		_dividend_label.text = "Dividend: 0% (No production boost, keeping 100% tax revenue)"
+	elif value >= 100.0:
+		_dividend_label.text = "Dividend: 100%% (Costs all tax revenue, boosts factory production by +%d%%)" % boost_percent
+	else:
+		_dividend_label.text = "Dividend: %d%% (Costs $%d/tick, boosts factory production by +%d%%)" % [
+			int(value), _economy.get_dividend_cost(value), boost_percent
+		]
+
 # ---- Bootstrap helper -------------------------------------------------------
 
 ## Creates and adds the EconomyManager as a child, then returns it.
@@ -428,6 +475,17 @@ func _create_placement_manager() -> BuildingPlacement:
 	bp.tilemap = _tilemap
 	add_child(bp)
 	return bp
+
+
+## Creates and adds the PipeNetworkManager, returning it for injection into the
+## economy (hookup multipliers) and placement controller (cache invalidation).
+func _create_pipe_network_manager() -> PipeNetworkManager:
+	var pn := PipeNetworkManager.new()
+	pn.name = "PipeNetworkManager"
+	pn.grid = _grid
+	pn.grid_size = GRID_SIZE
+	add_child(pn)
+	return pn
 
 ## All ground-tile writes are delegated to _placement_controller.place_tile(),
 ## which owns the TileSet mapping (see placement_controller.gd TILE_TYPE_MAP).

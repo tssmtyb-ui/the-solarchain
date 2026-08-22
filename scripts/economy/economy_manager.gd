@@ -40,9 +40,11 @@ const MAX_VILLA_LAND_VALUE: int = 30
 const UPGRADE_LVT: int = 30
 ## Downgrade: land value at or below this turns an apartment back into a villa.
 const DOWNGRADE_LVT: int = 18
-## Minimum time (msec) between automatic density changes on the same tile,
-## preventing flicker when land value hovers near a threshold.
-const EVOLUTION_COOLDOWN_MSEC: int = 15000
+## Buffer period (msec) protecting a tile from a second automatic density
+## change (villa <-> apartment) — prevents flicker when land value oscillates
+## near a threshold. Also stamped on manual upgrades so they can't downgrade
+## prematurely. 20000 ms = 4 assessment cycles at the default 5 s interval.
+const EVOLUTION_COOLDOWN_MSEC: int = 20000
 
 ## Worker radius and requirement for the factory labour dependency loop.
 ## Factories scan for nearby housing within this Manhattan distance.
@@ -69,6 +71,11 @@ const HOARDING_TIME_LIMIT_MSEC: int = 300000
 ## a public park. Factories produce $0 while one is active.
 const STRIKE_DURATION_MSEC: int = 180000
 
+## Logistics bonuses — factories hooked into a live pipe network (SLUDGE line
+## reaching the map edge) run at a production bonus; unhooked ones at a penalty.
+const HOOKED_FACTORY_MULTIPLIER: float = 1.3
+const UNHOOKED_FACTORY_MULTIPLIER: float = 0.5
+
 # ---------------------------------------------------------------------------
 #   Configuration (set by root scene before use)
 # ---------------------------------------------------------------------------
@@ -78,6 +85,10 @@ var assessment_interval: float = 5.0
 
 ## Reference to the GridManager — injected by the root scene.
 var grid: GridManager
+
+## Pipe/logistics connectivity graph — injected by the root scene. May be null
+## (no network), in which case factories run at base production.
+var pipe_network: PipeNetworkManager
 
 ## Grid dimensions — injected by the root scene.
 var grid_size: int = 10
@@ -98,6 +109,14 @@ var tile_claimed_times: Dictionary = {}
 ## Absolute tick (Time.get_ticks_msec()) until which a global industrial strike
 ## is active. Factories earn $0 while Time.get_ticks_msec() < this. 0 = no strike.
 var industrial_strike_until_msec: int = 0
+
+## Citizen's Dividend Policy (0–100 %). Higher payout boosts factory production
+## but deducts a matching dividend cost from the treasury each assessment.
+var dividend_percent: float = 0.0
+
+## Total factory income from the most recent assessment — the basis for live
+## dividend-cost previews in the UI (updated every assessment cycle).
+var last_factory_income: int = 0
 
 # ---------------------------------------------------------------------------
 #   Signals
@@ -140,10 +159,38 @@ func trigger_industrial_strike() -> void:
 	prints("Industrial strike triggered for %d ms." % STRIKE_DURATION_MSEC)
 
 
+## Sets the Citizen's Dividend payout percentage (0–100). Driven live by the UI
+## HSlider's value_changed signal.
+func set_dividend_percent(val: float) -> void:
+	dividend_percent = val
+
+
+## Arms the density-change buffer for a tile, recording its last change time.
+## Call after ANY state change on a residential tile (e.g. a manual villa→
+## apartment upgrade) so auto-evolution can't immediately undo it the next
+## assessment while land value is still fluctuating.
+func stamp_evolution_cooldown(grid_pos: Vector2i) -> void:
+	tile_build_times[grid_pos] = Time.get_ticks_msec()
+
+
+## Returns the factory production multiplier for a given dividend %. Scaled so
+## the boost is half the payout: 0 % → ×1.0 (no boost), 50 % → ×1.25, 100 % → ×1.5
+## (+50 %). Single source of truth for both the economy loop and the UI label.
+func get_factory_boost_multiplier(percent: float) -> float:
+	return 1.0 + percent / 200.0
+
+
+## Returns the dividend payout cost per assessment tick for a given dividend %,
+## based on the most recent factory income. Used for the live UI trade-off label.
+func get_dividend_cost(percent: float) -> int:
+	return int(last_factory_income * percent / 100.0)
+
+
 ## Runs a full assessment NOW (bypasses the timer) and emits the signal.
 func calculate_net_income() -> void:
 	var road_count: int = 0
 	var income: int = 0
+	var factory_income: int = 0
 	var current_time: int = Time.get_ticks_msec()
 
 	for pos in grid.get_all_occupied_positions():
@@ -163,7 +210,11 @@ func calculate_net_income() -> void:
 				# while Time.get_ticks_msec() < industrial_strike_until_msec.
 				if Time.get_ticks_msec() >= industrial_strike_until_msec:
 					if _get_local_workers(pos) >= REQUIRED_WORKERS:
-						income += get_land_value(pos)
+						var base_factory: int = get_land_value(pos)
+						factory_income += base_factory
+						# Logistics (pipe hookup) + Dividend Policy production modifiers.
+						income += int(base_factory * _factory_pipe_multiplier(pos) \
+								* get_factory_boost_multiplier(dividend_percent))
 					else:
 						prints("Factory at", pos, "is idle! Not enough workers.")
 			GridCellData.TileType.WAREHOUSE:
@@ -186,9 +237,12 @@ func calculate_net_income() -> void:
 					tile_build_times[pos] = current_time
 					residential_evolution_triggered.emit(pos, GridCellData.TileType.RESIDENTIAL_LOW)
 
+	last_factory_income = factory_income
 	var upkeep: int = road_count * ROAD_UPKEEP
 	var hoarding_tax: int = _hoarding_tax(current_time)
-	var net: int = income - upkeep - hoarding_tax
+	# Citizen's Dividend: the treasury pays out a % of factory income to citizens.
+	var dividend_payout: int = int(factory_income * dividend_percent / 100.0)
+	var net: int = income - upkeep - hoarding_tax - dividend_payout
 	assessment_completed.emit(net)
 
 
@@ -278,6 +332,18 @@ func _count_industrial_in_radius(grid_pos: Vector2i, radius: int) -> int:
 			if grid.get_tile_type(pos) == GridCellData.TileType.INDUSTRIAL:
 				count += 1
 	return count
+
+
+## Logistics multiplier for a factory's base production. Hooked-up factories
+## (a live pipe in a cardinal neighbour) get the hookup bonus; unhooked ones run
+## at a penalty. No pipe network present → neutral (×1.0).
+func _factory_pipe_multiplier(factory_pos: Vector2i) -> float:
+	if pipe_network == null:
+		return 1.0
+	if pipe_network.is_factory_hooked_up(factory_pos):
+		return HOOKED_FACTORY_MULTIPLIER
+	prints("Factory at", factory_pos, "is unhooked! Reduced production.")
+	return UNHOOKED_FACTORY_MULTIPLIER
 
 
 ## Scans within WORKER_RADIUS of a factory position and counts nearby workers.

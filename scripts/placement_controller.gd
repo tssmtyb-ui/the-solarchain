@@ -69,6 +69,10 @@ var placement: BuildingPlacement
 ## The corporate speculator AI; may be null (ownership checks are skipped).
 var speculator: SpeculatorManager
 
+## Pipe/logistics connectivity graph; may be null. Told to invalidate its cache
+## whenever a pipe or factory tile is placed/removed so hookups stay correct.
+var pipe_network: PipeNetworkManager
+
 ## Grid dimensions for bounds checks — mirrors the root scene's GRID_SIZE.
 var grid_size: int = 10
 
@@ -130,9 +134,22 @@ func attempt_build(tile_type: int, grid_pos: Vector2i, current_money: int) -> Di
 
 	var existing: int = grid.get_tile_type(grid_pos)
 
-	# Already built — silent no-op (except villas, which can be upgraded).
-	if existing == tile_type and tile_type != GridCellData.TileType.RESIDENTIAL_LOW:
-		return _fail(current_money, "")
+	# One object per tile. A build is only legal on empty ground, an identical
+	# tile re-click (silent no-op), or the intentional villa→apartment upgrade.
+	var is_buildable_ground: bool = (
+		existing == GridCellData.TileType.EMPTY
+		or existing == GridCellData.TileType.GRASS
+		or existing == GridCellData.TileType.DIRT
+	)
+	var is_villa_upgrade: bool = (
+		tile_type == GridCellData.TileType.RESIDENTIAL_LOW
+		and existing == GridCellData.TileType.RESIDENTIAL_LOW
+	)
+	if not is_buildable_ground and not is_villa_upgrade:
+		# Re-clicking the identical tile is a silent no-op (no error spam).
+		if existing == tile_type:
+			return _fail(current_money, "")
+		return _fail(current_money, "Tile already occupied! Bulldoze it first.")
 
 	var cost: int = BUILD_COSTS.get(tile_type, -1)
 	if cost < 0:
@@ -185,6 +202,10 @@ func attempt_bulldoze(grid_pos: Vector2i, current_money: int) -> Dictionary:
 	grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
 	place_tile(grid_pos, GridCellData.TileType.GRASS)
 
+	# Removing a pipe/factory breaks the logistics network — invalidate its cache.
+	if pipe_network != null and _is_network_relevant(existing):
+		pipe_network.mark_dirty()
+
 	# Demolishing a public park provokes a global industrial strike (0% refund
 	# is already the default — bulldozing returns money unchanged).
 	if existing == GridCellData.TileType.PARK:
@@ -228,9 +249,20 @@ func place_tile(cell: Vector2i, tile_type: int) -> void:
 		return
 	tilemap.set_cell(cell, entry.source_id, entry.coords)
 
+	# A pipe or factory appearing here changes logistics connectivity.
+	if pipe_network != null and _is_network_relevant(tile_type):
+		pipe_network.mark_dirty()
+
 # ---------------------------------------------------------------------------
 #   Internal helpers
 # ---------------------------------------------------------------------------
+
+## Returns true if this tile type participates in the pipe/logistics network
+## (SLUDGE segments and INDUSTRIAL hookup points).
+func _is_network_relevant(tile_type: int) -> bool:
+	return tile_type == GridCellData.TileType.SLUDGE \
+			or tile_type == GridCellData.TileType.INDUSTRIAL
+
 
 ## Returns true if any cardinal neighbour of `grid_pos` is a road tile.
 func _adjacent_to_road(grid_pos: Vector2i) -> bool:

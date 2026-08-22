@@ -32,31 +32,60 @@ script = ExtResource("4_0hol4")
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=1292433936]
 
-[node name="MoneyLabel" type="Label" parent="UI" unique_id=632292605]
-anchors_preset = 5
-anchor_left = 0.5
-anchor_right = 0.5
-offset_left = -144.0
-offset_top = 8.0
-offset_right = 144.0
-offset_bottom = 40.0
+[node name="TopBar" type="PanelContainer" parent="UI" unique_id=1000000101]
+anchors_preset = 10
+anchor_right = 1.0
+offset_bottom = 72.0
+
+[node name="HBoxContainer" type="HBoxContainer" parent="UI/TopBar" unique_id=1000000102]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="MoneyLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=632292605]
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
 theme_override_font_sizes/font_size = 24
+vertical_alignment = 1
+
+[node name="DividendBox" type="VBoxContainer" parent="UI/TopBar/HBoxContainer" unique_id=1000000103]
+layout_mode = 2
+alignment = 1
+
+[node name="DividendLabel" type="Label" parent="UI/TopBar/HBoxContainer/DividendBox" unique_id=1000000104]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
 horizontal_alignment = 1
 
-[node name="RoadToggle" type="TextureButton" parent="UI" unique_id=914233873]
-offset_right = 66.0
-offset_bottom = 24.0
+[node name="DividendSlider" type="HSlider" parent="UI/TopBar/HBoxContainer/DividendBox" unique_id=1000000105]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+
+[node name="BuildBar" type="PanelContainer" parent="UI" unique_id=1000000106]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -80.0
+
+[node name="HBoxContainer" type="HBoxContainer" parent="UI/BuildBar" unique_id=1000000107]
+layout_mode = 2
+theme_override_constants/separation = 12
+alignment = 1
+
+[node name="RoadToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=914233873]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
+ignore_texture_size = true
+stretch_mode = 5
 
-[node name="FactoryToggle" type="TextureButton" parent="UI" unique_id=1180538835]
-offset_left = 1.0
-offset_top = 46.0
-offset_right = 65.0
-offset_bottom = 110.0
+[node name="FactoryToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=1180538835]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("8_rqwuh")
@@ -64,25 +93,19 @@ texture_pressed = ExtResource("8_rqwuh")
 ignore_texture_size = true
 stretch_mode = 5
 
-[node name="ResidentialToggle" type="TextureButton" parent="UI" unique_id=282726002]
-offset_left = 1.0
-offset_top = 199.0
-offset_right = 67.0
-offset_bottom = 223.0
+[node name="ResidentialToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=282726002]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
+ignore_texture_size = true
+stretch_mode = 5
 
-[node name="WarehouseToggle" type="TextureButton" parent="UI" unique_id=282726001]
-anchors_preset = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -78.0
-offset_top = 33.0
-offset_right = -16.0
-offset_bottom = 78.0
-grow_horizontal = 0
+[node name="WarehouseToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=282726001]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("9_ir8iy")
@@ -90,14 +113,9 @@ texture_pressed = ExtResource("9_ir8iy")
 ignore_texture_size = true
 stretch_mode = 5
 
-[node name="ParkToggle" type="TextureButton" parent="UI" unique_id=370884910]
-anchors_preset = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -101.0
-offset_top = 81.0
-offset_bottom = 165.0
-grow_horizontal = 0
+[node name="ParkToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=370884910]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("10_park")
@@ -105,15 +123,9 @@ texture_pressed = ExtResource("10_park")
 ignore_texture_size = true
 stretch_mode = 5
 
-[node name="SludgeToggle" type="TextureButton" parent="UI" unique_id=1472725976]
-anchors_preset = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -77.0
-offset_top = 178.0
-offset_right = -15.0
-offset_bottom = 223.0
-grow_horizontal = 0
+[node name="SludgeToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=1472725976]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("11_sludge")
@@ -121,14 +133,15 @@ texture_pressed = ExtResource("11_sludge")
 ignore_texture_size = true
 stretch_mode = 5
 
-[node name="BulldozeToggle" type="TextureButton" parent="UI" unique_id=1018431014]
-offset_top = 134.0
-offset_right = 66.0
-offset_bottom = 158.0
+[node name="BulldozeToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=1018431014]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
 toggle_mode = true
 button_group = SubResource("ButtonGroup_z3u88")
 texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
+ignore_texture_size = true
+stretch_mode = 5
 
 [node name="MusicAttribution" type="Label" parent="UI" unique_id=1598675489]
 anchors_preset = 2
