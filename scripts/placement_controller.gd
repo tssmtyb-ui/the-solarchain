@@ -54,6 +54,51 @@ const ATLAS_ONLY_TILES: Array[int] = [
 ]
 
 # ---------------------------------------------------------------------------
+#   Road auto-tiling
+# ---------------------------------------------------------------------------
+
+## Cardinal offsets, in N/E/S/W order — index i matches bit (1 << i).
+const CARDINAL_OFFSETS: Array[Vector2i] = [
+	Vector2i(0, -1),  # N
+	Vector2i(1, 0),   # E
+	Vector2i(0, 1),   # S
+	Vector2i(-1, 0),  # W
+]
+
+## Direction bits for the 4-bit road connection mask (N|E|S|W).
+const DIR_N: int = 1
+const DIR_E: int = 2
+const DIR_S: int = 4
+const DIR_W: int = 8
+
+## Maps a 4-bit road connection mask to the TileSet atlas source id of the road
+## texture to display for that cell. The masks are derived from the cell's road
+## neighbours, so a straight, corner, T-junction and intersection each get a
+## matching sprite. This table is the single place to edit when swapping in
+## distinct road art.
+##
+## NOTE: the bundled road01..06 assets are all full-diamond road surfaces
+## (asphalt reaches every edge), differing only in faint lane markings — so
+## every mask currently resolves to a visually similar tile. Replacing them with
+## true straight/corner/T/intersection pieces (and updating this table) is what
+## makes roads actually look like a connected network.
+const ROAD_SOURCE_BY_MASK: Dictionary = {
+	(DIR_W | DIR_E): 5,                   # ─ horizontal straight        (road01)
+	(DIR_N | DIR_S): 6,                   # │ vertical straight          (road02)
+	(DIR_N | DIR_E): 7,                   # ┘ corner                     (road03)
+	(DIR_E | DIR_S): 7,                   # └ corner                     (road03)
+	(DIR_S | DIR_W): 7,                   # ┌ corner                     (road03)
+	(DIR_W | DIR_N): 7,                   # ┐ corner                     (road03)
+	(DIR_N | DIR_E | DIR_S): 8,           # ┴ T-junction                 (road04)
+	(DIR_E | DIR_S | DIR_W): 8,           # ┤ T-junction                 (road04)
+	(DIR_S | DIR_W | DIR_N): 8,           # ┬ T-junction                 (road04)
+	(DIR_W | DIR_N | DIR_E): 8,           # ├ T-junction                 (road04)
+	(DIR_N | DIR_E | DIR_S | DIR_W): 9,   # ┼ 4-way intersection         (road05)
+}
+## Isolated / dead-end fallback source (no mask match above → road06).
+const ROAD_SOURCE_FALLBACK: int = 10
+
+# ---------------------------------------------------------------------------
 #   Injected dependencies (set by the root scene before use)
 # ---------------------------------------------------------------------------
 
@@ -177,6 +222,11 @@ func attempt_build(tile_type: int, grid_pos: Vector2i, current_money: int) -> Di
 	if placement != null and not ATLAS_ONLY_TILES.has(placed_type):
 		placement.spawn_building(grid_pos, placed_type)
 
+	# Roads auto-tile: repaint this cell AND its cardinal neighbours so every
+	# road in the network shows the correct connection sprite.
+	if placed_type == GridCellData.TileType.ROAD or placed_type == GridCellData.TileType.ROAD_CROSS:
+		refresh_road_neighbors(grid_pos)
+
 	return { "ok": true, "money": new_money, "placed_type": placed_type }
 
 
@@ -201,6 +251,10 @@ func attempt_bulldoze(grid_pos: Vector2i, current_money: int) -> Dictionary:
 		placement.remove_building(grid_pos)
 	grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
 	place_tile(grid_pos, GridCellData.TileType.GRASS)
+
+	# Demolishing a road removes its connections — repaint surviving neighbours.
+	if existing == GridCellData.TileType.ROAD or existing == GridCellData.TileType.ROAD_CROSS:
+		refresh_road_neighbors(grid_pos)
 
 	# Removing a pipe/factory breaks the logistics network — invalidate its cache.
 	if pipe_network != null and _is_network_relevant(existing):
@@ -262,6 +316,51 @@ func place_tile(cell: Vector2i, tile_type: int) -> void:
 func _is_network_relevant(tile_type: int) -> bool:
 	return tile_type == GridCellData.TileType.SLUDGE \
 			or tile_type == GridCellData.TileType.INDUSTRIAL
+
+
+## Returns true if the cell at `off` from `cell` is a road tile. Out-of-bounds
+## neighbours are treated as not-road.
+func _road_connection(cell: Vector2i, off: Vector2i) -> bool:
+	var adj: Vector2i = cell + off
+	if not _within_bounds(adj):
+		return false
+	var adj_type: int = grid.get_tile_type(adj)
+	return adj_type == GridCellData.TileType.ROAD or adj_type == GridCellData.TileType.ROAD_CROSS
+
+
+## Computes the 4-bit connection mask (bits N,E,S,W) for a road at `cell` by
+## checking its cardinal neighbours.
+func _road_mask(cell: Vector2i) -> int:
+	var mask := 0
+	if _road_connection(cell, Vector2i(0, -1)): mask |= DIR_N
+	if _road_connection(cell, Vector2i(1, 0)):  mask |= DIR_E
+	if _road_connection(cell, Vector2i(0, 1)):  mask |= DIR_S
+	if _road_connection(cell, Vector2i(-1, 0)): mask |= DIR_W
+	return mask
+
+
+## Repaints a single road cell with the correct auto-tiled texture for its
+## neighbours. This is the texture-switching function — it re-reads the cell's
+## connection mask and swaps the TileSet atlas source to the matching sprite.
+## No-op for non-road tiles and out-of-bounds cells.
+func refresh_road_connection(cell: Vector2i) -> void:
+	if tilemap == null or not _within_bounds(cell):
+		return
+	var tile_type: int = grid.get_tile_type(cell)
+	if tile_type != GridCellData.TileType.ROAD and tile_type != GridCellData.TileType.ROAD_CROSS:
+		return
+	var mask: int = _road_mask(cell)
+	var source: int = ROAD_SOURCE_BY_MASK.get(mask, ROAD_SOURCE_FALLBACK)
+	tilemap.set_cell(cell, source, Vector2i.ZERO)
+
+
+## After a build or demolish at `cell`, refreshes the road texture for `cell`
+## AND every cardinal road neighbour so the whole network stays in sync —
+## placing a road next to an old road updates the old road's sprite too.
+func refresh_road_neighbors(cell: Vector2i) -> void:
+	refresh_road_connection(cell)
+	for off in CARDINAL_OFFSETS:
+		refresh_road_connection(cell + off)
 
 
 ## Returns true if any cardinal neighbour of `grid_pos` is a road tile.

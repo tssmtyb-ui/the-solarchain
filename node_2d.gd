@@ -19,7 +19,6 @@ var _speculator: SpeculatorManager
 ## Placement controller — single owner of the player build pipeline.
 var _placement_controller: PlacementController
 
-
 ## Grid dimensions for the starting map.
 const GRID_SIZE: int = 10
 
@@ -134,6 +133,18 @@ func _ready() -> void:
 
 	# --- Build programmatic UI overlays (credits + game-over screen) ---
 	UIBuilder.new().build_ui($UI, _on_restart_pressed)
+
+	# Toggleable Credits popup — created in code so all content stays fully
+	# self-contained in CreditsPanel (see scripts/ui/credits_panel.gd).
+	# It self-wires to the Credits button in the TopBar via its relative path.
+	var credits_panel := CreditsPanel.new()
+	credits_panel.name = "CreditsPanel"
+	credits_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	credits_panel.offset_left = -300.0
+	credits_panel.offset_right = 300.0
+	credits_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	credits_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	$UI.add_child(credits_panel)
 
 	# Citizen's Dividend Policy — the slider + label now live in the scene's TopBar
 	# (see node_2d.tscn) and are resolved via @onready refs. Wire the live
