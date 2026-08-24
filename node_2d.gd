@@ -9,8 +9,16 @@ extends Node2D
 @onready var _hover_layer: Node2D = $HoverLayer
 @onready var _economy: EconomyManager = _create_economy_manager()
 @onready var _money_label: Label = $UI/TopBar/HBoxContainer/MoneyLabel
+@onready var _workers_label: Label = $UI/TopBar/HBoxContainer/WorkersLabel
+@onready var _goods_label: Label = $UI/TopBar/HBoxContainer/GoodsLabel
 @onready var _dividend_slider: HSlider = $UI/TopBar/HBoxContainer/DividendBox/DividendSlider
 @onready var _dividend_label: Label = $UI/TopBar/HBoxContainer/DividendBox/DividendLabel
+@onready var _objective_residential: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckResidential
+@onready var _objective_factory: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckFactory
+@onready var _objective_road: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckRoad
+@onready var _bobr_dialogue: PanelContainer = $UI/BobrDialogue
+@onready var _quote_label: Label = $UI/BobrDialogue/MarginContainer/HBoxContainer/VBoxContainer/QuoteLabel
+@onready var _dismiss_button: Button = $UI/BobrDialogue/MarginContainer/HBoxContainer/VBoxContainer/DismissButton
 @onready var _placement: BuildingPlacement = _create_placement_manager()
 
 ## Corporate speculator AI — its claimed land is off-limits to the player.
@@ -43,6 +51,93 @@ var current_money: int = 1000
 
 ## True once the player goes bankrupt (money drops below zero); blocks input.
 var is_game_over: bool = false
+
+# ---------------------------------------------------------------------------
+#   Supply chain simulation — Step 1: workers, goods & land value
+# ---------------------------------------------------------------------------
+
+## Seconds between supply-chain simulation ticks.
+const SUPPLY_CHAIN_TICK_INTERVAL: float = 3.0
+
+## Workers contributed to the labour pool per residential tile.
+const WORKERS_PER_VILLA: int = 1
+const WORKERS_PER_APARTMENT: int = 3
+
+## Workers a factory must draw from the pool to operate.
+const WORKERS_PER_FACTORY: int = 2
+
+## Goods each operating factory produces per tick.
+const GOODS_PER_FACTORY_TICK: int = 3
+
+## Goods each house consumes per tick (when the pool can afford it).
+const GOODS_PER_HOUSE_TICK: int = 1
+
+## Manhattan radius over which a well-supplied house boosts land value.
+const GOODS_BOOST_RADIUS: int = 2
+
+## Land-value bonus added per well-supplied house within the boost radius.
+const GOODS_LAND_VALUE_BOOST: int = 5
+
+## Total worker capacity contributed by all residential tiles.
+var worker_capacity: int = 0
+
+## Workers not yet claimed by factories this tick.
+var available_workers: int = 0
+
+## Global goods stockpool — produced by factories, consumed by houses.
+var goods_stock: int = 0
+
+## Residential tiles that were well-supplied on the last tick (Vector2i → bool).
+var _goods_supplied: Dictionary = {}
+
+## Factories that drew workers and produced goods on the last tick.
+var operating_factories: int = 0
+
+# ---------------------------------------------------------------------------
+#   Road network validation — Step 2: adjacency checks
+# ---------------------------------------------------------------------------
+
+## Cardinal offsets (N, E, S, W) used for road-adjacency checks.
+const _CARDINAL_OFFSETS: Array[Vector2i] = [
+	Vector2i(0, -1),
+	Vector2i(1, 0),
+	Vector2i(0, 1),
+	Vector2i(-1, 0),
+]
+
+## Road-connection state for every placed house/factory tile (Vector2i → bool).
+## A building only participates in the supply chain while its entry is true.
+var _road_connected: Dictionary = {}
+
+# ---------------------------------------------------------------------------
+#   Tutorial objectives — Step 1: checklist tracking
+# ---------------------------------------------------------------------------
+
+## Residential zones required to complete the first tutorial objective.
+const OBJECTIVE_RESIDENTIAL_TARGET: int = 2
+## Factories required to complete the second tutorial objective.
+const OBJECTIVE_FACTORY_TARGET: int = 1
+
+## Live residential-zone count on the grid (any density).
+var _obj_residential: int = 0
+## Live factory count on the grid.
+var _obj_factory: int = 0
+## True once every placed house/factory sits adjacent to a road.
+var _obj_road_connected: bool = false
+
+## Bobr's greeting to the new mayor, shown once at launch.
+const TUTORIAL_INTRO_QUOTE := "Aha, a new mayor! Do me a favor: build some roads and factories so land values skyrocket. Just don't touch that dividend slider... you want me to get rich, right?"
+## Bobr's triumphant taunt right after the land grab.
+const TUTORIAL_COMPLETE_QUOTE := "Thanks for the unearned land value boost! I'm letting this prime plot sit empty while your city grows."
+## Bobr grudgingly pays the land-value tax once the player resolves the tutorial.
+const TUTORIAL_RESOLVE_QUOTE := "Tsk... a land-value tax? Fine. I'll pay it like everyone else — but I'll be watching this plot appreciate, mayor."
+
+## Whether Bobr has grabbed his speculative dirt lot (completion fires once).
+var _tutorial_bobr_grabbed: bool = false
+## Whether the player raised the LVT slider to end the tutorial.
+var _tutorial_resolved: bool = false
+## Grid position of Bobr's dirt lot (Vector2i(-1,-1) until claimed).
+var _bobr_dirt_lot: Vector2i = Vector2i(-1, -1)
 
 ## The Citizen's Dividend live trade-off label (resolved from the scene's TopBar
 ## via @onready above).
@@ -128,6 +223,10 @@ func _ready() -> void:
 	# Start the economy immediately (timer auto-starts in EconomyManager._ready()).
 	_economy.calculate_net_income()
 
+	# Supply-chain simulation (Step 1): its own tick timer, plus a land-value
+	# hook into the economy so well-supplied housing raises tax/dividend output.
+	_setup_supply_chain()
+
 	# --- Start background music ---
 	add_child(MusicManager.new())
 
@@ -151,11 +250,17 @@ func _ready() -> void:
 	# trade-off behaviour here: refresh on drag AND whenever factory income changes.
 	_update_dividend_label(_dividend_slider.value)
 	_dividend_slider.value_changed.connect(_on_dividend_changed)
+	_dismiss_button.pressed.connect(_on_bobr_dialogue_dismiss)
 	_economy.assessment_completed.connect(_on_assessment_refresh_dividend)
 
 	update_money_ui()
+	_update_resource_ui()
+	_update_objectives()
 
 	prints("World initialised — place roads and factories freely.")
+
+	# Tutorial Step 2: Bobr greets the new mayor on launch.
+	_show_bobr_dialogue(TUTORIAL_INTRO_QUOTE)
 
 
 ## Fills the grid with uniform GRASS tiles — the player's blank canvas.
@@ -275,6 +380,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	current_money = result.money
 	update_money_ui()
+
+	# Step 2: road-network validation — a newly placed/demolished tile can change
+	# the connectivity of this cell and its neighbours, so refresh them now.
+	refresh_road_connections(grid_pos)
+	# Step 3: a build/demolish can change capacity and goods — refresh the readouts.
+	_update_resource_ui()
+	# Tutorial: recount objectives after any placement or demolition.
+	_update_objectives()
 
 	if result.placed_type == GridCellData.TileType.GRASS:
 		prints("Demolished", GridCellData.TileType.keys()[existing], "at", grid_pos)
@@ -418,7 +531,18 @@ func _on_residential_evolution(grid_pos: Vector2i, new_tile_type: int) -> void:
 	_grid.set_tile(grid_pos, GridCellData.new(new_tile_type))
 	_placement_controller.place_tile(grid_pos, new_tile_type)
 	_placement.spawn_building(grid_pos, new_tile_type)
+	# Keep road-connection state in sync for the evolved tile (still a house).
+	refresh_road_connections(grid_pos)
+	_update_resource_ui()
+	_update_objectives()
 	prints("Evolved tile at", grid_pos, "->", GridCellData.TileType.keys()[new_tile_type])
+
+
+## Refreshes the workforce and goods readouts in the TopBar from the live
+## supply-chain state. Matches the MoneyLabel styling for a unified HUD.
+func _update_resource_ui() -> void:
+	_workers_label.text = "Workers: %d/%d" % [available_workers, worker_capacity]
+	_goods_label.text = "Goods: %d" % goods_stock
 
 
 ## Updates the money label to reflect the current balance.
@@ -443,6 +567,9 @@ func _on_restart_pressed() -> void:
 func _on_dividend_changed(value: float) -> void:
 	_economy.set_dividend_percent(value)
 	_update_dividend_label(value)
+	# Tutorial Step 2: raising the land-value tax forces Bobr to pay up.
+	if value > 0.0 and _tutorial_bobr_grabbed and not _tutorial_resolved:
+		_resolve_tutorial()
 
 
 ## Refreshes the trade-off label after each assessment so the displayed per-tick
@@ -464,6 +591,277 @@ func _update_dividend_label(value: float) -> void:
 		_dividend_label.text = "Dividend: %d%% (Costs $%d/tick, boosts factory production by +%d%%)" % [
 			int(value), _economy.get_dividend_cost(value), boost_percent
 		]
+
+# ---- Supply chain simulation ------------------------------------------------
+
+## Starts the supply-chain tick timer and wires the goods-supply land-value hook
+## into the economy. The hook is additive and non-breaking: it simply raises the
+## land value (and thus tax/dividend output) around well-supplied housing.
+func _setup_supply_chain() -> void:
+	var ticker := Timer.new()
+	ticker.name = "SupplyChainTimer"
+	ticker.wait_time = SUPPLY_CHAIN_TICK_INTERVAL
+	ticker.autostart = true
+	ticker.one_shot = false
+	ticker.timeout.connect(_on_supply_chain_tick)
+	add_child(ticker)
+
+	_economy.goods_supply_bonus_provider = goods_supply_bonus_at
+
+
+## One simulation tick. Order matters:
+##   1) Rebuild total worker capacity from every residential tile.
+##   2) Factories draw workers from the pool; staffed factories produce goods.
+##   3) Houses consume goods; houses that got fed are flagged so the economy's
+##      land value reflects a well-supplied neighbourhood.
+func _on_supply_chain_tick() -> void:
+	# 1) Rebuild worker capacity from residential tiles.
+	worker_capacity = 0
+	for pos in _grid.get_all_occupied_positions():
+		match _grid.get_tile_type(pos):
+			GridCellData.TileType.RESIDENTIAL_LOW:
+				worker_capacity += WORKERS_PER_VILLA
+			GridCellData.TileType.RESIDENTIAL_HIGH:
+				worker_capacity += WORKERS_PER_APARTMENT
+
+	# 2) Factories draw workers; each staffed factory produces goods.
+	available_workers = worker_capacity
+	operating_factories = 0
+	var produced: int = 0
+	for pos in _grid.get_all_occupied_positions():
+		if _grid.get_tile_type(pos) != GridCellData.TileType.INDUSTRIAL:
+			continue
+		# Step 2: disconnected factories stay idle — they draw no workers and
+		# produce nothing until a road is built next to them.
+		if not _road_connected.get(pos, false):
+			continue
+		if available_workers >= WORKERS_PER_FACTORY:
+			available_workers -= WORKERS_PER_FACTORY
+			operating_factories += 1
+			produced += GOODS_PER_FACTORY_TICK
+	goods_stock += produced
+
+	# 3) Houses consume goods; record which ones were fed this tick.
+	_goods_supplied.clear()
+	var supplied_houses: int = 0
+	for pos in _grid.get_all_occupied_positions():
+		var tile_type: int = _grid.get_tile_type(pos)
+		if tile_type != GridCellData.TileType.RESIDENTIAL_LOW \
+				and tile_type != GridCellData.TileType.RESIDENTIAL_HIGH:
+			continue
+		# Step 2: disconnected houses consume nothing (and get no supply bonus).
+		if not _road_connected.get(pos, false):
+			continue
+		if goods_stock >= GOODS_PER_HOUSE_TICK:
+			goods_stock -= GOODS_PER_HOUSE_TICK
+			_goods_supplied[pos] = true
+			supplied_houses += 1
+		else:
+			_goods_supplied[pos] = false
+
+	prints("Supply chain: capacity=%d available=%d factories=%d goods=%d supplied=%d" % [
+		worker_capacity, available_workers, operating_factories, goods_stock, supplied_houses])
+
+	# Step 3: keep the TopBar resource readouts in sync with this tick's result.
+	_update_resource_ui()
+
+
+## Land-value bonus a tile receives from well-supplied houses within
+## GOODS_BOOST_RADIUS. Consulted by EconomyManager.get_land_value(), so a fed
+## neighbourhood raises its tax revenue — and, because factories also price on
+## land value, its dividend base too.
+func goods_supply_bonus_at(grid_pos: Vector2i) -> int:
+	var bonus: int = 0
+	for dx in range(-GOODS_BOOST_RADIUS, GOODS_BOOST_RADIUS + 1):
+		for dy in range(-GOODS_BOOST_RADIUS, GOODS_BOOST_RADIUS + 1):
+			if abs(dx) + abs(dy) > GOODS_BOOST_RADIUS:
+				continue
+			var adj: Vector2i = Vector2i(grid_pos.x + dx, grid_pos.y + dy)
+			if _goods_supplied.get(adj, false):
+				bonus += GOODS_LAND_VALUE_BOOST
+	return bonus
+
+
+# ---- Road network validation (Step 2) ---------------------------------------
+
+## Returns true if any of the 4 cardinal neighbours of `pos` is a road tile
+## (ROAD or ROAD_CROSS). Out-of-bounds neighbours are treated as not-road.
+func is_road_adjacent(pos: Vector2i) -> bool:
+	for off in _CARDINAL_OFFSETS:
+		var adj: Vector2i = pos + off
+		if adj.x < 0 or adj.x >= GRID_SIZE or adj.y < 0 or adj.y >= GRID_SIZE:
+			continue
+		var tile_type: int = _grid.get_tile_type(adj)
+		if tile_type == GridCellData.TileType.ROAD or tile_type == GridCellData.TileType.ROAD_CROSS:
+			return true
+	return false
+
+
+## Recomputes the road-connection state for a single tile. House/factory tiles
+## get a fresh is_road_adjacent() result; anything else is pruned from the map
+## so stale entries can't linger after a demolish.
+func _update_road_connection(pos: Vector2i) -> void:
+	var tile_type: int = _grid.get_tile_type(pos)
+	var is_building: bool = (
+		tile_type == GridCellData.TileType.RESIDENTIAL_LOW
+		or tile_type == GridCellData.TileType.RESIDENTIAL_HIGH
+		or tile_type == GridCellData.TileType.INDUSTRIAL
+	)
+	if not is_building:
+		_road_connected.erase(pos)
+		return
+	_road_connected[pos] = is_road_adjacent(pos)
+
+
+## Re-checks road connections for `center` and all four cardinal neighbours.
+## Covers both a newly placed road (its adjacent buildings) and a newly placed
+## building (its own tile). Call after any build or demolish.
+func refresh_road_connections(center: Vector2i) -> void:
+	_update_road_connection(center)
+	for off in _CARDINAL_OFFSETS:
+		_update_road_connection(center + off)
+
+
+# ---- Tutorial objective tracking (Step 1) ----------------------------------
+
+## Recomputes the tutorial objective counts straight from the current grid and
+## refreshes the ObjectiveBox checklist. Idempotent — safe to call after any
+## build, bulldoze, or residential evolution.
+func _update_objectives() -> void:
+	_obj_residential = 0
+	_obj_factory = 0
+	var total_buildings: int = 0
+	var connected_buildings: int = 0
+	for pos in _grid.get_all_occupied_positions():
+		var tile_type: int = _grid.get_tile_type(pos)
+		var is_residential: bool = (
+			tile_type == GridCellData.TileType.RESIDENTIAL_LOW
+			or tile_type == GridCellData.TileType.RESIDENTIAL_HIGH
+		)
+		if is_residential:
+			_obj_residential += 1
+		elif tile_type == GridCellData.TileType.INDUSTRIAL:
+			_obj_factory += 1
+		else:
+			continue
+		total_buildings += 1
+		if is_road_adjacent(pos):
+			connected_buildings += 1
+
+	# Road objective: the targets are met AND every house/factory sits on a road.
+	_obj_road_connected = (
+		_obj_residential >= OBJECTIVE_RESIDENTIAL_TARGET
+		and _obj_factory >= OBJECTIVE_FACTORY_TARGET
+		and total_buildings > 0
+		and connected_buildings == total_buildings
+	)
+	_refresh_objective_ui()
+
+	# Tutorial Step 2: fire Bobr's land grab the moment the checklist completes.
+	if _all_objectives_met() and not _tutorial_bobr_grabbed:
+		_bobr_land_grab()
+
+
+## Writes the current objective state into the ObjectiveBox checklist nodes.
+func _refresh_objective_ui() -> void:
+	var res_done: bool = _obj_residential >= OBJECTIVE_RESIDENTIAL_TARGET
+	var fac_done: bool = _obj_factory >= OBJECTIVE_FACTORY_TARGET
+	_objective_residential.button_pressed = res_done
+	_objective_factory.button_pressed = fac_done
+	_objective_road.button_pressed = _obj_road_connected
+	_objective_residential.text = "Build %d Residential zones (%d/%d)" % [
+		OBJECTIVE_RESIDENTIAL_TARGET, _obj_residential, OBJECTIVE_RESIDENTIAL_TARGET]
+	_objective_factory.text = "Build %d Factory (%d/%d)" % [
+		OBJECTIVE_FACTORY_TARGET, _obj_factory, OBJECTIVE_FACTORY_TARGET]
+	_objective_road.text = "Connect them with a Road (%s)" % (
+		"Connected" if _obj_road_connected else "Pending")
+
+
+# ---- Tutorial event triggers (Step 2) --------------------------------------
+
+## Opens Bobr's speech bubble with `quote`. The dialogue starts hidden and is
+## closed via the Dismiss button.
+func _show_bobr_dialogue(quote: String) -> void:
+	if _quote_label == null:
+		return
+	_quote_label.text = quote
+	_bobr_dialogue.show()
+
+
+## Closes Bobr's speech bubble when the player clicks Dismiss.
+func _on_bobr_dialogue_dismiss() -> void:
+	_bobr_dialogue.hide()
+
+
+## True once every tutorial checklist item is complete.
+func _all_objectives_met() -> bool:
+	return (
+		_obj_residential >= OBJECTIVE_RESIDENTIAL_TARGET
+		and _obj_factory >= OBJECTIVE_FACTORY_TARGET
+		and _obj_road_connected
+	)
+
+
+## Completion event: Bobr buys/locks a random empty tile next to the player's
+## city as a dirt lot, then taunts the mayor. The plot is deliberately NOT added
+## to the AI's portfolio — it stays untaxed and unsellable ("locked") until the
+## player resolves the land-value tax (see _resolve_tutorial()).
+func _bobr_land_grab() -> void:
+	var pos: Vector2i = _find_city_adjacent_empty_tile()
+	_tutorial_bobr_grabbed = true
+	if pos == Vector2i(-1, -1):
+		_show_bobr_dialogue(TUTORIAL_COMPLETE_QUOTE)
+		return
+	_bobr_dirt_lot = pos
+	_grid.set_tile(pos, GridCellData.new(GridCellData.TILE_DIRT_LOT))
+	_placement_controller.place_tile(pos, GridCellData.TILE_DIRT_LOT)
+	_show_bobr_dialogue(TUTORIAL_COMPLETE_QUOTE)
+	prints("Bobr claims dirt lot at", pos)
+
+
+## Returns a random GRASS tile adjacent to a house/factory (the "city"), or
+## Vector2i(-1,-1) when no such spot exists.
+func _find_city_adjacent_empty_tile() -> Vector2i:
+	var candidates: Array[Vector2i] = []
+	for pos in _grid.get_all_occupied_positions():
+		if _grid.get_tile_type(pos) != GridCellData.TileType.GRASS:
+			continue
+		if _speculator.owned_tiles.has(pos):
+			continue
+		if _is_adjacent_to_city(pos):
+			candidates.append(pos)
+	if candidates.is_empty():
+		return Vector2i(-1, -1)
+	return candidates.pick_random()
+
+
+## True if any 8-directional neighbour of `pos` is a house or factory.
+func _is_adjacent_to_city(pos: Vector2i) -> bool:
+	for dx in range(-1, 2):
+		for dy in range(-1, 2):
+			if dx == 0 and dy == 0:
+				continue
+			var adj: Vector2i = pos + Vector2i(dx, dy)
+			if adj.x < 0 or adj.x >= GRID_SIZE or adj.y < 0 or adj.y >= GRID_SIZE:
+				continue
+			var tile_type: int = _grid.get_tile_type(adj)
+			if tile_type == GridCellData.TileType.RESIDENTIAL_LOW \
+					or tile_type == GridCellData.TileType.RESIDENTIAL_HIGH \
+					or tile_type == GridCellData.TileType.INDUSTRIAL:
+				return true
+	return false
+
+
+## LVT resolution: the player raised the dividend slider above 0%, so Bobr's
+## speculative plot now enters the AI's taxable portfolio. Ends the tutorial.
+func _resolve_tutorial() -> void:
+	_tutorial_resolved = true
+	if _bobr_dirt_lot != Vector2i(-1, -1) \
+			and not _speculator.owned_tiles.has(_bobr_dirt_lot):
+		_speculator.owned_tiles.append(_bobr_dirt_lot)
+	_show_bobr_dialogue(TUTORIAL_RESOLVE_QUOTE)
+	prints("Bobr pays the land-value tax on his plot at", _bobr_dirt_lot)
+
 
 # ---- Bootstrap helper -------------------------------------------------------
 

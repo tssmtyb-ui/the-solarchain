@@ -52,6 +52,10 @@ const CAPTURE_DRAW_TIMEOUT_FRAMES := 60
 # runs twice per probe, and a scene big enough to exceed this is one where a
 # partial digest still catches anything a probe does to the nodes it reached.
 const DIGEST_NODE_LIMIT := 4000
+# How far the aim ray reaches, and how many Controls the UI census will count
+# before it stops. Both bound the per-act cost of measuring the world.
+const AIM_RAY_LENGTH := 50.0
+const UI_CENSUS_LIMIT := 400
 
 # Hard stop on an `until` wait, in wall-clock time rather than frames. The session
 # gives an op 120s (OP_TIMEOUT_MS in qa-session/service.ts); an op that outruns
@@ -83,9 +87,79 @@ const SERVO_STALL_FRAMES := 40
 # of dropped events rides the reply instead, so the overflow is loud.
 const MAX_PENDING_EVENTS := 100
 
+# Foreign-input labels an act carries back. The count is the measurement; these
+# only have to say WHAT arrived, and a key somebody leant on repeats forever.
+const MAX_FOREIGN_LABELS := 8
+
 # A game_drive body longer than this is not one maneuver, and every byte of it
 # is model output that crossed the socket. Split it.
 const DRIVE_SOURCE_MAX_CHARS := 8000
+
+# ---------------------------------------------------------------- recording
+#
+# One JPEG per CAPTURE_EVERY_PHYSICS physics frames while the game is actually
+# running, with the agent's stated goal and the input the game really received
+# drawn into the frame. Off unless the session sidecar carries `record`.
+
+# PHYSICS frames between captures, not a frame rate: two ticks is 30fps of game
+# time in a 60Hz game and 10fps in a 20Hz one, and in both cases the video plays
+# back at real speed with no timestamp math. Anything reading this back has to
+# derive the rate from the project's physics rate, not assume 60.
+const CAPTURE_EVERY_PHYSICS := 2
+
+# Measured on a real GPU: 2.9ms average to read the viewport back and 15.0ms to
+# encode at this quality, so the encode dominates. That cost lands on drawn
+# frames (159fps -> 129fps) and NOT on game time - physics measured 59.08Hz
+# while recording against 59.05Hz while not.
+const RECORD_JPEG_QUALITY := 0.75
+
+# Frames on disk before the stride DOUBLES and every second frame already
+# written is deleted. p90 of a real run is 498s of live play - about 15k frames
+# - so a recorder that simply stopped at the cap would bite one run in five and
+# lose the END, which is where the verdict is decided. Overridable per session
+# by the `record_max_frames` sidecar key.
+const MAX_FRAMES := 9000
+
+# The overlay's geometry is fixed VIEWPORT pixels rather than scaled to the
+# game. A recorded frame keeps the viewport's own resolution - MAX_FRAME_EDGE
+# exists because an observation crosses a socket, and these go straight to disk
+# - so a canvas coordinate here is a pixel coordinate in the file, which is what
+# lets the e2e gate probe the caption panel and the REC badge by coordinate.
+const OVERLAY_LAYER := 128
+const OVERLAY_PAD := 24.0
+const CAPTION_HEIGHT := 132.0
+const CHIP_HEIGHT := 34.0
+const CAPTION_FONT_SIZE := 28
+# The floor the caption is allowed to shrink to before it is ellipsized instead.
+const CAPTION_FONT_MIN := 16
+const CHIP_FONT_SIZE := 22
+# Opaque, not translucent: the gate reads these colours back out of a lossy
+# JPEG, and a panel blended over the game is a different colour in every frame.
+const PANEL_COLOR := Color(0.05, 0.06, 0.09)
+# The caption floats OVER the game, so it is translucent - the look the minigolf
+# spike had before the gate's pixel probes forced an opaque band.
+const CAPTION_PANEL_COLOR := Color(0.05, 0.06, 0.09, 0.72)
+const CHIP_PANEL_COLOR := Color(0.06, 0.07, 0.10, 0.82)
+const CAPTION_SUB_FONT_SIZE := 20
+const CHIP_ROW_GAP := 62.0
+# Where the gate reads, and nowhere else.
+const SENTINEL_X := 24.0
+const SENTINEL_Y := 46.0
+const SENTINEL_W := 60.0
+const SENTINEL_H := 6.0
+# Under the overlay, above the game.
+const SEAT_LAYER := 1
+const HARNESS_GROUP := "ziva_input_harness"
+const BARE_MODIFIERS := ["Alt", "Ctrl", "Shift", "Meta", "Command", "Option", "Super"]
+const REC_COLOR := Color(0.86, 0.13, 0.15)
+const CHIP_COLOR := Color(0.16, 0.55, 0.36)
+const CURSOR_COLOR := Color(1.0, 0.95, 0.4)
+const TRAIL_COLOR := Color(1.0, 0.85, 0.2, 0.55)
+const RIPPLE_MS := 450
+const TRAIL_POINTS := 40
+const MOUSE_LABELS := {
+	MOUSE_BUTTON_LEFT: "LMB", MOUSE_BUTTON_RIGHT: "RMB", MOUSE_BUTTON_MIDDLE: "MMB"
+}
 
 # Inputs left pressed across acts by `sustain`, label -> the entry that pressed
 # them, so the release edge is dispatched through exactly the same channel.
@@ -118,6 +192,51 @@ var _serving := false
 # undone, so the run is poisoned from that point on and no verdict drawn from it
 # is worth anything: every later op refuses, and stop reports it.
 var _tainted := ""
+# Non-zero while this harness is inside its own parse_input_event/flush pair.
+# Both dispatch synchronously, so the window is exact: whatever _input() sees
+# with this at zero, nobody in this session sent.
+var _injecting := 0
+# Foreign edges seen since the act in flight thawed the tree, and what they
+# were. Reset by _op_act, so a stray press between ops is never billed to an act.
+var _foreign_in_act := 0
+var _foreign_labels: Array = []
+
+# Empty unless this session was told to record; every recorder path is gated on
+# it, so a session without the sidecar keys behaves exactly as it always did.
+var _record_dir := ""
+var _record_max_frames := MAX_FRAMES
+var _record_stride := CAPTURE_EVERY_PHYSICS
+# The next frame_%06d index to write. Names are never reused, so decimation can
+# delete from the middle without renumbering anything the encoder will read.
+var _record_next := 0
+var _record_kept := PackedInt32Array()
+# Milliseconds the game was actually RUNNING. This, not wall clock, is what the
+# encoder turns into a frame rate: a session spends most of its life frozen
+# while the agent thinks, and none of that is in the video.
+var _record_live_ms := 0.0
+var _record_last_physics := -1
+var _record_error := ""
+var _capturing := false
+var _capture_waited := 0
+var _overlay: CanvasLayer = null
+var _overlay_draw: Node2D = null
+# The agent's stated goal for the op in flight - the caption's top line. The
+# line under it is derived from _held, which is what the game actually got, so
+# the two can disagree on screen. That disagreement is the whole point.
+var _intent := ""
+var _held: Dictionary = {}
+var _caption_fit: Dictionary = {}
+var _seat: SubViewport = null
+var _seat_requested := false
+var _seated_scene: Node = null
+var _session_goal := ""
+var _sig_cursor := Vector2i(-9999, -9999)
+var _sig_held := -1
+var _sig_intent := -1
+var _sig_ripples := -1
+var _sig_frozen := false
+var _trail: Array = []
+var _ripples: Array = []
 
 
 func _ready() -> void:
@@ -126,6 +245,18 @@ func _ready() -> void:
 	if EngineDebugger.is_active() and not EngineDebugger.has_capture("ziva_pt"):
 		EngineDebugger.register_message_capture("ziva_pt", _on_capture)
 	if FileAccess.file_exists(SESSION_PATH):
+		# Two autoloads pointing at this script means two harnesses dialling one
+		# session. The second socket is refused with a 409 and the game then quits
+		# - silent, baffling, and it cost a spike an hour. A duplicate now stands
+		# down loudly and lets the first one work.
+		if get_tree().get_nodes_in_group(HARNESS_GROUP).size() > 0:
+			printerr(
+				"ziva_input_harness: this script is registered as MORE THAN ONE autoload in "
+				+ "project.godot. Only the first will drive the session; remove the duplicate "
+				+ "entry (both point at res://addons/ziva_agent/ziva_input_harness.gd)."
+			)
+			return
+		add_to_group(HARNESS_GROUP)
 		_start_session()
 		return
 	_params = _load_params()
@@ -178,8 +309,161 @@ func _load_params() -> Dictionary:
 
 # ---------------------------------------------------------------- injection
 
+# Every edge this harness sends leaves through here, flagged. parse_input_event
+# and flush_buffered_events both dispatch synchronously, so _input() below runs
+# inside this call for the harness's own events and outside it for everyone
+# else's - which is the whole discrimination the detector rests on.
+func _inject(event: InputEvent) -> void:
+	_injecting += 1
+	if _seat != null:
+		# BOTH paths, deliberately. push_input reaches the game's own nodes and the
+		# SubViewport's private cursor - which is what answers a game polling
+		# get_viewport().get_mouse_position(), and therefore what lets warp_mouse
+		# go. parse_input_event reaches nothing inside the seat (a bare
+		# SubViewport gets no input from the root) but it DOES set the global
+		# Input singleton, which is the only thing a game polling
+		# Input.is_physical_key_pressed can see. Neither path alone covers both
+		# kinds of game; together they cover every archetype measured.
+		Input.parse_input_event(event)
+		Input.flush_buffered_events()
+		# The virtual seat: the game lives in a bare SubViewport, which receives
+		# only what is pushed into it. Nothing from the real keyboard or pointer
+		# can arrive, and the SubViewport keeps its OWN mouse position - so a game
+		# polling get_viewport().get_mouse_position() is answered without ever
+		# calling warp_mouse on the machine the user is sitting at.
+		_seat.push_input(event)
+	else:
+		Input.parse_input_event(event)
+		Input.flush_buffered_events()
+	_injecting -= 1
+
+
+## Move the running game into a SubViewport nothing but this session can reach.
+##
+## OFF by default, and it must stay that way until the caller knows which kind of
+## game it is driving. A SubViewport delivers pushed events to its own nodes'
+## _input/_unhandled_input and answers get_viewport().get_mouse_position() from
+## its own pointer - so an event-driven game, or one that polls the VIEWPORT
+## cursor, is fully seated: measured, real xdotool keys and clicks reached the
+## window and the game saw none of them, while pushed input landed and the cursor
+## never moved on the host.
+##
+## It does NOT reach a game that polls the global Input singleton
+## (`Input.is_physical_key_pressed`, `Input.is_mouse_button_pressed`). That state
+## is fed by real devices only, so such a game ignores pushed keys entirely -
+## measured on Godotcraft, whose player reads KEY_W that way and did not take a
+## step while seated. Those games need display isolation instead; the seat can
+## neither drive them nor protect them.
+## Done here rather than by the launcher so the seat needs no wrapper scene, no
+## gdext change and no new launch path: the scene is already loaded and running,
+## and it simply changes parent.
+## The node the game's own scripts live under. Once seated, the scene is nested
+## inside a SubViewport and SceneTree.current_scene no longer points at it, so
+## every probe, screenshot and scene-name lookup asks here instead.
+func _game_scene() -> Node:
+	if _seated_scene != null and is_instance_valid(_seated_scene):
+		return _seated_scene
+	return get_tree().current_scene
+
+
+func _take_seat() -> bool:
+	var scene: Node = get_tree().current_scene
+	if scene == null:
+		printerr("ziva_input_harness: no current scene to seat")
+		return false
+	var root := get_tree().get_root()
+	var seat := SubViewport.new()
+	seat.size = Vector2i(root.get_visible_rect().size)
+	seat.handle_input_locally = true
+	seat.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# The game keeps rendering while the tree is paused, exactly as it did in the
+	# root viewport - the freeze/thaw contract and the recorder both rely on it.
+	seat.process_mode = Node.PROCESS_MODE_INHERIT
+	var view := TextureRect.new()
+	view.set_anchors_preset(Control.PRESET_FULL_RECT)
+	view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	view.stretch_mode = TextureRect.STRETCH_SCALE
+	var holder := CanvasLayer.new()
+	holder.layer = SEAT_LAYER
+	holder.add_child(view)
+	root.add_child(seat)
+	root.add_child(holder)
+	root.remove_child(scene)
+	seat.add_child(scene)
+	# SceneTree.current_scene will not follow a node into a SubViewport, so the
+	# harness remembers the game root itself and _game_scene() answers for it.
+	_seated_scene = scene
+	view.texture = seat.get_texture()
+	_seat = seat
+	return true
+
+
+# Input nobody in this session sent: a hand on the real keyboard, a click into
+# the game's window while it is under test. It is not a defect in the game, but
+# it reads exactly like one - a run that reports "jump did nothing" because
+# somebody else's Escape opened a menu blames the game for a person.
+#
+# Bare mouse MOTION is deliberately NOT foreign. _move_mouse warps the real
+# cursor (the only way a game that polls the cursor mid-drag sees a gesture at
+# all) and the OS emits its own motion event for that warp asynchronously,
+# outside the flag above - so counting motion makes every drag self-report as
+# contamination. Keys, mouse buttons and actions have no such echo.
+func _input(event: InputEvent) -> void:
+	# Deliberately BEFORE the injection gate: the overlay's second caption line
+	# is what the game received, whoever sent it.
+	if not _record_dir.is_empty():
+		_note_overlay_event(event)
+	if _injecting > 0:
+		return
+	var what := ""
+	if event is InputEventKey:
+		var key: InputEventKey = event
+		what = "key %s %s" % [OS.get_keycode_string(key.keycode), "down" if key.pressed else "up"]
+	elif event is InputEventMouseButton:
+		var button: InputEventMouseButton = event
+		what = "mouse button %d %s" % [button.button_index, "down" if button.pressed else "up"]
+	elif event is InputEventAction:
+		var action: InputEventAction = event
+		what = "action %s %s" % [action.action, "down" if action.pressed else "up"]
+	else:
+		return
+	_foreign_in_act += 1
+	if _foreign_labels.size() < MAX_FOREIGN_LABELS:
+		_foreign_labels.append(what)
+	# Frozen between ops is the case that cannot be survived: the game was
+	# supposed to be perfectly still, and something moved it. Whatever the next
+	# op observes is a state this run did not produce, so it poisons the session
+	# exactly like a mutating probe - later ops refuse, stop reports it.
+	if not get_tree().paused or _tainted != "":
+		return
+	_tainted = (
+		"foreign input reached the game while it was FROZEN between ops: %s. " % what
+		+ "This session did not send it, so something outside the run - a hand on the "
+		+ "keyboard, a click into the game's window - is playing the same game you are "
+		+ "judging, and the world was supposed to be motionless. Everything observed from "
+		+ "here on mixes your inputs with someone else's, so no verdict drawn from it is "
+		+ "worth anything: report `blocked` and say the game was touched during the test, "
+		+ "not that the game is broken."
+	)
+
+
 func _button_index(entry: Dictionary) -> MouseButton:
-	return MOUSE_BUTTON_RIGHT if String(entry.get("button", "left")) == "right" else MOUSE_BUTTON_LEFT
+	return MOUSE_BUTTON_RIGHT if str(entry.get("button", "left")) == "right" else MOUSE_BUTTON_LEFT
+
+
+# `button` is a word, not a Godot button index. A caller sending 1 means "left",
+# but str(1) is not "left", so it would quietly become a left click - and a
+# right-click test that passes by left-clicking is worse than one that fails.
+# Until this check existed, an integer here crashed on String(int), which has no
+# constructor, and the run saw only "Invalid call 'String' constructor".
+func _button_error(entry: Dictionary) -> String:
+	if not entry.has("button"):
+		return ""
+	var button := str(entry["button"])
+	if button == "left" or button == "right":
+		return ""
+	return 'button must be "left" or "right", got ' + JSON.stringify(entry["button"])
 
 
 # Push a mouse press (pressed=true) or release at a viewport pixel. The cursor
@@ -206,8 +490,7 @@ func _click_at(pos: Vector2, button: MouseButton, pressed: bool) -> void:
 		btn.button_mask = (
 			MOUSE_BUTTON_MASK_RIGHT if button == MOUSE_BUTTON_RIGHT else MOUSE_BUTTON_MASK_LEFT
 		)
-	Input.parse_input_event(btn)
-	Input.flush_buffered_events()
+	_inject(btn)
 
 
 # Godot 4.7 leaves a programmatically focused LineEdit focused but NOT editing,
@@ -246,8 +529,7 @@ func _dispatch_key(entry: Dictionary, pressed: bool) -> String:
 		)
 	if ev.keycode != 0:
 		ev.physical_keycode = ev.keycode
-	Input.parse_input_event(ev)
-	Input.flush_buffered_events()
+	_inject(ev)
 	return ""
 
 
@@ -280,6 +562,9 @@ func _dispatch_input(entry: Dictionary, pressed: bool) -> String:
 # plain calls - a coroutine a forgotten `await` silently abandons is exactly
 # the kind of failure a drive body cannot be allowed to have.
 func _dispatch_edge(entry: Dictionary, pressed: bool) -> String:
+	var button_error := _button_error(entry)
+	if not button_error.is_empty():
+		return button_error
 	var kind: String = String(entry.get("type", "action"))
 	match kind:
 		"key":
@@ -313,8 +598,7 @@ func _dispatch_edge(entry: Dictionary, pressed: bool) -> String:
 			# viewport centre the polled cursor never matched.
 			mv.position = _to_window(get_viewport().get_mouse_position())
 			mv.global_position = mv.position
-			Input.parse_input_event(mv)
-			Input.flush_buffered_events()
+			_inject(mv)
 		_:
 			var action: String = String(entry.get("action", ""))
 			if action.is_empty():
@@ -329,8 +613,7 @@ func _dispatch_edge(entry: Dictionary, pressed: bool) -> String:
 			var ev := InputEventAction.new()
 			ev.action = action
 			ev.pressed = pressed
-			Input.parse_input_event(ev)
-			Input.flush_buffered_events()
+			_inject(ev)
 	return ""
 
 
@@ -339,7 +622,7 @@ func _dispatch_edge(entry: Dictionary, pressed: bool) -> String:
 func _resolve_target(target: String) -> Control:
 	if target.is_empty():
 		return null
-	var scene_root: Node = get_tree().current_scene
+	var scene_root: Node = _game_scene()
 	if scene_root == null:
 		return null
 	var by_path: Node = scene_root.get_node_or_null(NodePath(target))
@@ -587,10 +870,20 @@ func _start_session() -> void:
 	# The whole point of a session is that the world is frozen between ops, so
 	# this node is the one thing that may keep running while it is.
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_put_up_glass()
+	if bool(cfg.get("record", false)):
+		_record_dir = String(cfg.get("record_dir", ""))
+		if _record_dir.is_empty():
+			printerr("ziva_input_harness: the sidecar set record=true but named no record_dir")
+		else:
+			_record_max_frames = maxi(int(cfg.get("record_max_frames", MAX_FRAMES)), 2)
+			_build_overlay()
 	var url := (
 		"ws://127.0.0.1:%d%s?token=%s"
 		% [int(cfg["port"]), String(cfg["path"]), String(cfg["token"]).uri_encode()]
 	)
+	_seat_requested = bool(cfg.get("seat", false))
+	_session_goal = String(cfg.get("goal", ""))
 	_ws = WebSocketPeer.new()
 	# A screenshot reply is a base64 PNG of a whole frame - megabytes, against a
 	# 64 KiB default that silently refuses anything larger. MAX_FRAME_EDGE already
@@ -603,7 +896,44 @@ func _start_session() -> void:
 		_ws = null
 
 
-func _process(_delta: float) -> void:
+# The window becomes a pane of glass the moment a session owns it: mouse events
+# pass through to whatever is behind it, so it can never be clicked, so it can
+# never take focus, so the host's keystrokes can never reach the game. Six
+# sessions of the Godotcraft run died to exactly that click-then-type path.
+#
+# Measured on X11 with a peer window holding focus: a plain window took 3 keys
+# and 2 clicks from the host; this takes 0 of each. A passthrough REGION was the
+# other candidate and leaks - the degenerate polygon it needs (an empty one means
+# "disable") stays live, and a click aimed at that corner landed.
+#
+# NO_FOCUS is not redundant with it: under focus-follows-mouse the pointer alone
+# gives a window the keyboard, with no click for passthrough to swallow.
+#
+# This is also the half of the isolation the virtual seat cannot do. A bare
+# SubViewport ignores host input, but a game polling Input.is_physical_key_pressed
+# reads the global singleton, which the host's real keyboard sets whether the game
+# is seated or not.
+func _put_up_glass() -> void:
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_MOUSE_PASSTHROUGH, true)
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, true)
+	if not DisplayServer.window_get_flag(DisplayServer.WINDOW_FLAG_MOUSE_PASSTHROUGH):
+		printerr(
+			"ziva_input_harness: %s refused WINDOW_FLAG_MOUSE_PASSTHROUGH, so the game window "
+			% DisplayServer.get_name()
+			+ "still accepts the host's clicks. Anything clicked or typed at it while the agent "
+			+ "drives will reach the game and taint the session."
+		)
+	if not DisplayServer.window_get_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS):
+		printerr(
+			"ziva_input_harness: %s refused WINDOW_FLAG_NO_FOCUS. Clicks are still passed "
+			% DisplayServer.get_name()
+			+ "through, but under focus-follows-mouse the host's pointer can hand this window "
+			+ "the keyboard without one."
+		)
+
+
+func _process(delta: float) -> void:
+	_tick_recorder(delta)
 	if _ws == null:
 		return
 	_ws.poll()
@@ -634,11 +964,18 @@ func _process(_delta: float) -> void:
 func _greet() -> void:
 	for i in range(SETTLE_FRAMES):
 		await get_tree().process_frame
+	if _seat_requested:
+		if _take_seat():
+			# The seat is a new viewport, so the scene needs a frame in it before
+			# anything is measured or captured through it.
+			await get_tree().process_frame
+		else:
+			printerr("ziva_input_harness: could not take the virtual seat; running unseated")
 	_freeze()
 	# Session frame counters are PHYSICS frames throughout: the tick game logic
 	# samples input on, and the unit every frames parameter is documented in.
 	_start_frame = Engine.get_physics_frames()
-	var scene: Node = get_tree().current_scene
+	var scene: Node = _game_scene()
 	_send({"op": "hello", "scene": "" if scene == null else scene.scene_file_path})
 	_serving = false
 
@@ -714,6 +1051,10 @@ func _serve(text: String) -> void:
 			_thaw()
 			var lifted: Array = await _release_all_sustained()
 			_freeze()
+			# The process ends a few frames from here, so this is the last chance
+			# to publish a live_ms that includes the thaw above.
+			if not _record_dir.is_empty():
+				_write_recording_json()
 			reply = {"ok": true, "released_on_stop": lifted}
 			if _tainted != "":
 				reply["tainted"] = _tainted
@@ -788,7 +1129,7 @@ func _eval(expression: String) -> Dictionary:
 # api.eval and the servo loop need the real Variant, where the wire form
 # "Vector2(4, 5)" would be a useless string.
 func _eval_raw(expression: String) -> Dictionary:
-	var scene: Node = get_tree().current_scene
+	var scene: Node = _game_scene()
 	if scene == null:
 		return {"error": "there is no current scene to evaluate '" + expression + "' against"}
 	var parsed := Expression.new()
@@ -831,6 +1172,92 @@ func _eval_raw(expression: String) -> Dictionary:
 # into 200 s of harness CPU and blew straight through the session's 120 s op
 # deadline. Hashing the same values costs 6.5 ms - 26x cheaper, and strictly
 # more sensitive than the text form (see the identity fold below).
+# ---------------------------------------------------- what the WORLD did
+#
+# `effect` used to mean "did the GDScript strings the caller happened to choose
+# change value". That is not what the caller reads it as: the system prompt
+# turns a null result into a verdict about the GAME. Measured cost of the
+# difference - a run pressed E while probing `_hud.visible`, got `effect: none`,
+# and concluded the inventory was broken. It was not; the right probe was
+# `is_inventory_open()`. The agent abandoned a working mechanic and paid for it.
+#
+# So the world is measured independently of the caller's probes. Everything here
+# is derivable with NO per-game knowledge - verified against two unrelated games
+# (a voxel sandbox and a golf game): the current camera and its transform, what
+# that camera is looking at (a raycast through the viewport centre), the visible
+# UI census, and the whole-tree digest that already exists for probe purity.
+func _world_snapshot() -> Dictionary:
+	var snap := {"digest": _state_digest(), "mouse_mode": int(Input.mouse_mode)}
+	var cam := get_viewport().get_camera_3d()
+	if cam != null:
+		snap["cam_pos"] = cam.global_position
+		snap["cam_fwd"] = -cam.global_transform.basis.z
+		# What the crosshair is on. This is the single most useful fact for an
+		# agent that is playing rather than inspecting, and it needs no adapter.
+		var space := cam.get_world_3d().direct_space_state
+		if space != null:
+			var from := cam.global_position
+			var query := PhysicsRayQueryParameters3D.create(from, from + (-cam.global_transform.basis.z) * AIM_RAY_LENGTH)
+			query.collide_with_areas = true
+			var hit := space.intersect_ray(query)
+			if not hit.is_empty() and hit.has("collider") and hit["collider"] != null:
+				snap["aim"] = String((hit["collider"] as Node).name)
+				snap["aim_at"] = hit["position"]
+	var focus := get_viewport().gui_get_focus_owner()
+	snap["focus"] = "" if focus == null else String(focus.name)
+	var shown := 0
+	for c in get_tree().get_root().find_children("*", "Control", true, false):
+		if (c as Control).visible:
+			shown += 1
+		if shown > UI_CENSUS_LIMIT:
+			break
+	snap["ui_visible"] = shown
+	return snap
+
+
+## Readable, world-first: what moved, in the game's own terms.
+##
+## Returns `lines` (everything worth telling the caller) and `moved` (whether any
+## of it counts as the game RESPONDING). They differ on purpose. Clicking any
+## Button hands it focus, so if focus alone counted, every dead button would look
+## alive and the "delivered, no observable effect" refusal - the one thing that
+## catches a broken control - would stop firing. Focus is reported, never counted.
+func _world_diff(before: Dictionary, after: Dictionary) -> Dictionary:
+	var out: Array = []
+	var moved_meaningfully := false
+	if before.has("cam_pos") and after.has("cam_pos"):
+		var moved: float = (after["cam_pos"] as Vector3).distance_to(before["cam_pos"])
+		if moved > 0.05:
+			out.append("viewpoint moved %.2fm" % moved)
+			moved_meaningfully = true
+	if before.has("cam_fwd") and after.has("cam_fwd"):
+		var turned: float = rad_to_deg((before["cam_fwd"] as Vector3).angle_to(after["cam_fwd"]))
+		if turned > 1.0:
+			out.append("view turned %.0f deg" % turned)
+			moved_meaningfully = true
+	if String(before.get("aim", "")) != String(after.get("aim", "")):
+		out.append("aiming at %s (was %s)" % [
+			("nothing" if String(after.get("aim", "")).is_empty() else String(after["aim"])),
+			("nothing" if String(before.get("aim", "")).is_empty() else String(before["aim"])),
+		])
+		moved_meaningfully = true
+	if int(before.get("ui_visible", 0)) != int(after.get("ui_visible", 0)):
+		out.append("UI changed (%d -> %d visible controls)" % [
+			int(before.get("ui_visible", 0)), int(after.get("ui_visible", 0))])
+		moved_meaningfully = true
+	if String(before.get("focus", "")) != String(after.get("focus", "")):
+		out.append("keyboard focus -> %s" % ("nothing" if String(after.get("focus","")).is_empty() else String(after["focus"])))
+	if int(before.get("mouse_mode", 0)) != int(after.get("mouse_mode", 0)):
+		out.append("mouse mode %d -> %d" % [int(before.get("mouse_mode",0)), int(after.get("mouse_mode",0))])
+		moved_meaningfully = true
+	# The whole-tree digest is deliberately NOT a fallback signal here. A living
+	# game moves on its own - day/night, animals, particles - so in Godotcraft it
+	# differs on every act, which would make `none` unreachable and strip the one
+	# state that is a real finding of all meaning. Measured: an unbound keypress
+	# reported "changed" purely from ambient motion.
+	return {"lines": out, "moved": moved_meaningfully}
+
+
 func _state_digest() -> int:
 	var parts := PackedInt64Array()
 	var stack: Array = [get_tree().get_root()]
@@ -923,7 +1350,7 @@ func _op_watch(msg: Dictionary) -> Dictionary:
 	var specs: Array = msg.get("signals", [])
 	if specs.is_empty():
 		return {"ok": false, "error": "game_watch needs at least one {node_path, signal} entry"}
-	var scene: Node = get_tree().current_scene
+	var scene: Node = _game_scene()
 	if scene == null:
 		return {"ok": false, "error": "there is no current scene to watch"}
 	for spec_v in specs:
@@ -1055,6 +1482,20 @@ func _op_observe(msg: Dictionary) -> Dictionary:
 # counter instead, bounded, so a game that is not being drawn says so in one
 # second rather than hanging the op until the session's 120s deadline.
 func _capture_frame() -> Dictionary:
+	# The overlay is up during pauses now (see _tick_recorder), and this is the
+	# frame the agent reasons over - so it comes down for exactly this capture
+	# and goes straight back. Hiding it costs one drawn frame, which the wait
+	# below already needs anyway.
+	var overlay_was_visible := _overlay != null and _overlay.visible
+	if overlay_was_visible:
+		_overlay.visible = false
+	var shot := await _capture_frame_raw()
+	if overlay_was_visible:
+		_overlay.visible = true
+	return shot
+
+
+func _capture_frame_raw() -> Dictionary:
 	var drawn_before := Engine.get_frames_drawn()
 	var waited := 0
 	while Engine.get_frames_drawn() == drawn_before:
@@ -1090,6 +1531,391 @@ func _capture_frame() -> Dictionary:
 		"png_base64": Marshalls.raw_to_base64(img.save_png_to_buffer()),
 		"size": [img.get_width(), img.get_height()],
 	}
+
+
+# --------------------------------------------------------- recording the run
+
+# Called every process frame, recording or not. The pause check is the whole
+# "only while playing" rule and the whole contamination guard at once: the
+# session freezes the tree between every op, so thinking time is never captured,
+# and game_observe screenshots - the evidence the agent judges - are only ever
+# taken while frozen, which is exactly when the overlay is not on screen. No
+# bookkeeping, no flag anybody has to keep correct.
+func _tick_recorder(delta: float) -> void:
+	if _record_dir.is_empty():
+		return
+	var playing := not get_tree().paused
+	# The overlay stays UP while the tree is frozen. Between ops is most of a
+	# run's wall clock, and it is exactly when somebody glancing at the Game tab
+	# sees a motionless game and cannot tell whether Ziva is working or wedged.
+	# Evidence stays clean because _capture_frame hides it for the one frame it
+	# reads, not because the overlay is absent.
+	if not playing:
+		if _overlay_dirty():
+			_overlay_draw.queue_redraw()
+		return
+	_record_live_ms += delta * 1000.0
+	var cursor: Vector2 = get_viewport().get_mouse_position()
+	if _trail.is_empty() or (_trail[-1] as Vector2).distance_squared_to(cursor) > 4.0:
+		_trail.append(cursor)
+		if _trail.size() > TRAIL_POINTS:
+			_trail.remove_at(0)
+	if _overlay_dirty():
+		_overlay_draw.queue_redraw()
+	if _capturing:
+		# frame_post_draw never arrives while nothing is drawing this window, and
+		# a Game tab covered by another editor panel is enough to stop it (see
+		# _capture_frame). The recorder would then stall while live_ms kept
+		# running, and the encoder would stretch the frames it did get across the
+		# whole run - a video that is wrong about the game and says nothing.
+		_capture_waited += 1
+		if _capture_waited > CAPTURE_DRAW_TIMEOUT_FRAMES:
+			_fail_recording(
+				"the game drew no frame in %d process frames while a capture was pending"
+				% CAPTURE_DRAW_TIMEOUT_FRAMES
+			)
+		return
+	if not _record_error.is_empty():
+		return
+	var physics := Engine.get_physics_frames()
+	if _record_last_physics >= 0 and physics - _record_last_physics < _record_stride:
+		return
+	_record_last_physics = physics
+	_capture_waited = 0
+	_capture_recording_frame()
+
+
+# Awaiting frame_post_draw is what makes the readback land on a frame that was
+# actually DRAWN; without it get_image() returns whatever the GPU last resolved,
+# which on a paused-then-thawed game is the frame before the act. The await also
+# makes this a coroutine, so _capturing keeps the next process frame from
+# starting a second one on top of it.
+func _capture_recording_frame() -> void:
+	_capturing = true
+	await RenderingServer.frame_post_draw
+	var img: Image = get_viewport().get_texture().get_image()
+	if img == null or img.is_empty():
+		_fail_recording("the viewport read back an empty image")
+		return
+	var path := "%s/frame_%06d.jpg" % [_record_dir, _record_next]
+	var err := img.save_jpg(path, RECORD_JPEG_QUALITY)
+	if err != OK:
+		_fail_recording("could not write %s (error %d)" % [path, err])
+		return
+	_record_kept.append(_record_next)
+	_record_next += 1
+	if _record_kept.size() >= _record_max_frames:
+		_decimate()
+	_write_recording_json()
+	_capturing = false
+
+
+# The cap is reached by long runs, and a long run's END is where the verdict is
+# decided - so the stride doubles and every second frame already on disk goes,
+# rather than the recorder stopping and losing the part that mattered. The frame
+# rate stays uniform, disk stays bounded, and the whole run survives.
+func _decimate() -> void:
+	_record_stride *= 2
+	var kept := PackedInt32Array()
+	for i in range(_record_kept.size()):
+		if i % 2 == 0:
+			kept.append(_record_kept[i])
+		else:
+			DirAccess.remove_absolute("%s/frame_%06d.jpg" % [_record_dir, _record_kept[i]])
+	_record_kept = kept
+
+
+# Rewritten after every capture rather than once at the end: a game that crashes
+# or is killed mid-run still leaves the encoder an accurate account of what is
+# on disk, and the frame rate is computed from live_ms - so a stale one would
+# play the whole run back at the wrong speed.
+func _write_recording_json() -> void:
+	var payload := {
+		"frames": _record_kept.size(),
+		"live_ms": int(_record_live_ms),
+		"stride": _record_stride,
+		"physics_hz": Engine.physics_ticks_per_second,
+	}
+	if not _record_error.is_empty():
+		payload["error"] = _record_error
+	var f := FileAccess.open("%s/recording.json" % _record_dir, FileAccess.WRITE)
+	if f == null:
+		_record_error = "could not open recording.json in " + _record_dir
+		printerr("ziva_input_harness: recording stopped - " + _record_error)
+		return
+	f.store_string(JSON.stringify(payload))
+	f.close()
+
+
+# A recording is evidence, so a capture that stops silently is the worst
+# outcome: the video ends mid-run and looks like the GAME did. Say so once, stop
+# trying, and carry the reason in recording.json so the encoder reports it with
+# the run instead of shipping a truncated clip as a finding.
+func _fail_recording(why: String) -> void:
+	_record_error = why
+	_capturing = false
+	printerr("ziva_input_harness: recording stopped - " + why)
+	_write_recording_json()
+
+
+func _build_overlay() -> void:
+	_overlay = CanvasLayer.new()
+	# Above the game's own HUD layers, and running while the tree is frozen so
+	# _tick_recorder can hide it before the next observation is captured.
+	_overlay.layer = OVERLAY_LAYER
+	_overlay.process_mode = Node.PROCESS_MODE_ALWAYS
+	_overlay_draw = Node2D.new()
+	_overlay_draw.draw.connect(_draw_overlay)
+	_overlay.add_child(_overlay_draw)
+	add_child(_overlay)
+
+
+# Every event the game receives, ours and anyone else's. _held is therefore a
+# measurement rather than a claim: an act that says it is holding W while the
+# game never saw a W draws an empty chip row under a caption promising one.
+func _note_overlay_event(event: InputEvent) -> void:
+	var label := ""
+	var pressed := false
+	if event is InputEventKey:
+		var key: InputEventKey = event
+		if key.is_echo():
+			return
+		var code: Key = key.keycode if key.keycode != KEY_NONE else key.physical_keycode
+		label = OS.get_keycode_string(code) if code != KEY_NONE else String.chr(key.unicode)
+		pressed = key.pressed
+	elif event is InputEventMouseButton:
+		var button: InputEventMouseButton = event
+		label = String(MOUSE_LABELS.get(button.button_index, "mouse %d" % button.button_index))
+		pressed = button.pressed
+		if pressed:
+			# The POLLED cursor, not the event's position: the event carries
+			# window pixels (see _click_at) and everything drawn here is in
+			# canvas pixels, which is what get_mouse_position reports.
+			_ripples.append([get_viewport().get_mouse_position(), Time.get_ticks_msec()])
+	elif event is InputEventAction:
+		var action: InputEventAction = event
+		label = String(action.action)
+		pressed = action.pressed
+	else:
+		return
+	if label.is_empty():
+		return
+	# A bare modifier is never something this session sends, so one appearing is
+	# the HOST's keyboard reaching the game. Worse, a desktop that grabs the
+	# key-up (KWin swallows Super) never delivers the release, so the chip sticks
+	# for the rest of the run - a real run showed "Meta" pinned over every frame.
+	if label in BARE_MODIFIERS:
+		return
+	if pressed:
+		_held[label] = true
+	else:
+		_held.erase(label)
+
+
+# Pointer first and the panels over it: the gate probes the caption panel, the
+# REC badge and the first held-key chip by coordinate, and a cursor that wandered
+# into any of them would change the pixel it reads.
+func _draw_overlay() -> void:
+	var size: Vector2 = get_viewport().get_visible_rect().size
+	var font: Font = ThemeDB.fallback_font
+	var frozen := get_tree().paused
+
+	if _trail.size() > 1:
+		_overlay_draw.draw_polyline(PackedVector2Array(_trail), TRAIL_COLOR, 3.0)
+	var now := Time.get_ticks_msec()
+	var alive: Array = []
+	for ripple in _ripples:
+		var age: float = float(now - int(ripple[1])) / float(RIPPLE_MS)
+		if age > 1.0:
+			continue
+		alive.append(ripple)
+		_overlay_draw.draw_arc(
+			ripple[0], 12.0 + age * 48.0, 0.0, TAU, 32, Color(CURSOR_COLOR, 1.0 - age), 3.0
+		)
+	_ripples = alive
+	var cursor: Vector2 = get_viewport().get_mouse_position()
+	_overlay_draw.draw_arc(cursor, 14.0, 0.0, TAU, 24, CURSOR_COLOR, 3.0)
+	_overlay_draw.draw_line(cursor - Vector2(22, 0), cursor + Vector2(22, 0), CURSOR_COLOR, 2.0)
+	_overlay_draw.draw_line(cursor - Vector2(0, 22), cursor + Vector2(0, 22), CURSOR_COLOR, 2.0)
+
+	# Two lines, sized to their own text and floated over the game rather than a
+	# band laid across it. The full-width opaque bar this replaces existed only so
+	# the gate could read a flat colour out of a lossy JPEG; the sentinel strips
+	# below carry that job now, and cost ~700 pixels instead of a fifth of the
+	# frame.
+	# Falls back to the SESSION's goal, not to a shrug. The five settle frames
+	# after every game_start are recorded before any act exists, and across a run
+	# with many restarts those frames were most of the footage - all of them
+	# captioned "no stated goal" while the agent knew perfectly well what it was
+	# there for. The brief now rides the whole session.
+	var goal := _intent
+	if goal.is_empty():
+		goal = ("GOAL: " + _session_goal) if not _session_goal.is_empty() else "no stated goal"
+	var under := (
+		"paused between actions - Ziva is deciding what to do next"
+		if frozen
+		else _input_line(cursor)
+	)
+	var pad := 22.0
+	# Only the GOAL is fitted. The line under it carries the live pointer, so its
+	# text changes every frame - fitting that thrashes the memo and costs render
+	# frames the GAME samples input on: measured, a drag landed at x=270 instead
+	# of 300 because the fixture polls the cursor once per drawn frame.
+	var goal_size := _fit_caption(font, goal, size.x - 120.0, CAPTION_FONT_SIZE)
+	var under_size := CAPTION_SUB_FONT_SIZE
+	var goal_w: float = font.get_string_size(goal, HORIZONTAL_ALIGNMENT_LEFT, -1, goal_size).x
+	var under_w: float = font.get_string_size(under, HORIZONTAL_ALIGNMENT_LEFT, -1, under_size).x
+	var block_w: float = maxf(goal_w, under_w) + pad * 2.0
+	var block_h: float = float(goal_size) + float(under_size) + pad * 2.0
+	var bx: float = (size.x - block_w) * 0.5
+	var by: float = size.y - CHIP_ROW_GAP - block_h
+	_overlay_draw.draw_rect(Rect2(bx, by, block_w, block_h), CAPTION_PANEL_COLOR)
+	_overlay_draw.draw_rect(Rect2(bx, by, 3.0, block_h), REC_COLOR)
+	_overlay_draw.draw_string(
+		font, Vector2(bx + pad, by + pad + float(goal_size) * 0.78), goal,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, goal_size, Color(0.99, 0.95, 0.74)
+	)
+	_overlay_draw.draw_string(
+		font, Vector2(bx + pad, by + pad + float(goal_size) + float(under_size) * 0.82), under,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, under_size, Color(0.74, 0.87, 0.99)
+	)
+
+	# Held-input chips, centred under the caption.
+	# _held is keyed by label, so take the keys once: indexing it positionally
+	# throws inside the draw callback, and everything after the throw - the
+	# sentinels included - silently stops rendering.
+	var labels: Array = _held.keys()
+	if not labels.is_empty():
+		var widths: Array = []
+		var total := 0.0
+		for label in labels:
+			var w: float = font.get_string_size(
+				String(label), HORIZONTAL_ALIGNMENT_LEFT, -1, CHIP_FONT_SIZE
+			).x + 30.0
+			widths.append(w)
+			total += w + 10.0
+		var cx: float = (size.x - total) * 0.5
+		for i in range(labels.size()):
+			var w2: float = widths[i]
+			var chip := Rect2(cx, size.y - CHIP_ROW_GAP + 14.0, w2, CHIP_HEIGHT)
+			_overlay_draw.draw_rect(chip, CHIP_PANEL_COLOR)
+			_overlay_draw.draw_rect(chip, CURSOR_COLOR, false, 2.0)
+			_overlay_draw.draw_string(
+				font, Vector2(cx + 15.0, chip.position.y + 24.0), String(labels[i]),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, CHIP_FONT_SIZE, Color(1, 1, 1, 0.97)
+			)
+			cx += w2 + 10.0
+
+	# REC: a dot and a word, no box, bottom-left as the spike had it. Top-left is
+	# where games put their own debug text - Godotcraft's "Press ` to toggle this
+	# panel" ran straight through the badge - and the corner under the caption is
+	# the one place nothing competes for.
+	var rec_y := size.y - OVERLAY_PAD - 7.0
+	_overlay_draw.draw_circle(
+		Vector2(OVERLAY_PAD + 7.0, rec_y), 7.0,
+		Color(0.55, 0.55, 0.6) if frozen else REC_COLOR
+	)
+	# The word sits on raw gameplay with no panel behind it, so it needs its own
+	# contrast: white on Godotcraft's lit grass was unreadable without this.
+	var rec_label := "PAUSED" if frozen else "REC"
+	_overlay_draw.draw_string(
+		font, Vector2(OVERLAY_PAD + 23.0, rec_y + 8.0), rec_label,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, CHIP_FONT_SIZE, Color(0, 0, 0, 0.55)
+	)
+	_overlay_draw.draw_string(
+		font, Vector2(OVERLAY_PAD + 22.0, rec_y + 7.0), rec_label,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, CHIP_FONT_SIZE, Color(1, 1, 1, 0.93)
+	)
+
+	# Sentinel strips: the ONLY thing the e2e reads by coordinate. Opaque, so a
+	# lossy JPEG keeps their colour; tiny, so they cost the viewer nothing. The
+	# overlay above is now free to be designed for a person instead of a probe.
+	_overlay_draw.draw_rect(Rect2(SENTINEL_X, SENTINEL_Y, SENTINEL_W, SENTINEL_H), PANEL_COLOR)
+	if not labels.is_empty():
+		_overlay_draw.draw_rect(
+			Rect2(SENTINEL_X + SENTINEL_W + 8.0, SENTINEL_Y, SENTINEL_W, SENTINEL_H), CHIP_COLOR
+		)
+	# Recording state gets a sentinel of its own so the gate never has to sample
+	# the badge itself - that coupling is what dragged the badge into the corner
+	# a game was already using.
+	if not frozen:
+		_overlay_draw.draw_rect(
+			Rect2(SENTINEL_X + (SENTINEL_W + 8.0) * 2.0, SENTINEL_Y, SENTINEL_W, SENTINEL_H),
+			REC_COLOR
+		)
+
+
+## Redraw only when the overlay would come out different. It is drawn every DRAWN
+## frame, and the game samples input on those same frames - repainting an
+## identical picture 60 times a second takes render budget straight out of the
+## game it is filming. Compared field by field rather than through a formatted
+## key: building one string per frame cost more than the repaint it saved.
+func _overlay_dirty() -> bool:
+	var cursor: Vector2i = Vector2i(get_viewport().get_mouse_position())
+	var frozen := get_tree().paused
+	if (
+		cursor == _sig_cursor
+		and _held.size() == _sig_held
+		and _intent.length() == _sig_intent
+		and _ripples.size() == _sig_ripples
+		and frozen == _sig_frozen
+	):
+		return false
+	_sig_cursor = cursor
+	_sig_held = _held.size()
+	_sig_intent = _intent.length()
+	_sig_ripples = _ripples.size()
+	_sig_frozen = frozen
+	return true
+
+
+## Largest size at or below `base` whose string fits `limit`, floored at
+## CAPTION_FONT_MIN. Memoised because it runs per caption line per DRAWN frame,
+## and the search is a get_string_size call per step: uncached it cost measured
+## render frames (94 against a floor of 100 in the gate's paused-cap arm).
+func _fit_caption(font: Font, text: String, limit: float, base: int) -> int:
+	var key := "%s|%d|%d" % [text, int(limit), base]
+	if _caption_fit.has(key):
+		return int(_caption_fit[key])
+	var size_px := base
+	while size_px > CAPTION_FONT_MIN:
+		if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size_px).x <= limit:
+			break
+		size_px -= 1
+	# The caption text changes with the act, not the frame, so this stays tiny;
+	# the clear keeps a long run from accumulating one entry per distinct goal.
+	if _caption_fit.size() > 64:
+		_caption_fit.clear()
+	_caption_fit[key] = size_px
+	return size_px
+
+
+# The caption is FITTED, never clipped. draw_string's width just cuts the glyphs
+# off at the edge, so a goal one word too long ends mid-word and the reader
+# cannot tell whether they are seeing all of it - and the Game tab, which sizes
+# this overlay, gets narrower the more docks the user opens. The size steps down
+# until the string fits; only a goal too long even at CAPTION_FONT_MIN is
+# trimmed, and then with an ellipsis, which SAYS there is more.
+func _draw_caption(font: Font, y: float, limit: float, text: String, color: Color) -> void:
+	var width := limit - OVERLAY_PAD
+	var size := CAPTION_FONT_SIZE
+	while (
+		size > CAPTION_FONT_MIN
+		and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width
+	):
+		size -= 2
+	var line := TextLine.new()
+	line.add_string(text, font, size)
+	line.width = width
+	line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	# TextLine draws from the top of its line box; draw_string drew from the
+	# baseline, and every caption's y is a baseline.
+	line.draw(_overlay_draw.get_canvas_item(), Vector2(OVERLAY_PAD, y - line.get_line_ascent()), color)
+
+
+func _input_line(cursor: Vector2) -> String:
+	var held := "nothing held" if _held.is_empty() else ", ".join(PackedStringArray(_held.keys()))
+	return "game receives: %s | pointer %d,%d" % [held, int(cursor.x), int(cursor.y)]
 
 
 # One press/hold/release cycle, counted in PHYSICS frames rather than wall-clock
@@ -1559,13 +2385,16 @@ func _dispatch_servo(entry: Dictionary, label: String) -> Dictionary:
 # instead (a captured first-person camera reads nothing else). Its coordinates
 # are WINDOW pixels like a real device's - see _click_at.
 func _move_mouse(position: Vector2, relative: Vector2) -> void:
-	Input.warp_mouse(_to_window(position))
+	# Seated, the SubViewport tracks the pointer from the motion event below, so
+	# warping is both unnecessary and the exact thing that steals the user's
+	# cursor. Unseated, the warp is still load-bearing (see the note above).
+	if _seat == null:
+		Input.warp_mouse(_to_window(position))
 	var motion := InputEventMouseMotion.new()
 	motion.position = _to_window(position)
 	motion.global_position = motion.position
 	motion.relative = _to_window(relative)
-	Input.parse_input_event(motion)
-	Input.flush_buffered_events()
+	_inject(motion)
 
 
 # Callers speak VIEWPORT pixels - the space `unproject_position`, Control rects
@@ -1601,8 +2430,10 @@ func _release_all_sustained() -> Array:
 
 
 func _op_act(msg: Dictionary) -> Dictionary:
+	_intent = String(msg.get("intent", ""))
 	var probes: Array = msg.get("probes", [])
 	var before := _eval_all(probes)
+	var world_before := _world_snapshot()
 	var bad := _first_probe_error(before)
 	if bad != "":
 		return {"ok": false, "error": bad}
@@ -1618,6 +2449,8 @@ func _op_act(msg: Dictionary) -> Dictionary:
 
 	var start := Engine.get_physics_frames()
 	_thaw()
+	_foreign_in_act = 0
+	_foreign_labels = []
 	var delivered: Array = []
 	for entry in msg.get("inputs", []):
 		delivered.append(await _deliver(entry, until != ""))
@@ -1709,13 +2542,24 @@ func _op_act(msg: Dictionary) -> Dictionary:
 	_freeze()
 
 	var after := _eval_all(probes)
+	var world_after := _world_snapshot()
+	var world := _world_diff(world_before, world_after)
+	var changes: Array = world["lines"]
+	var probes_moved := JSON.stringify(after) != JSON.stringify(before)
 	var reply := {
 		"ok": true,
 		"delivered": delivered,
 		"frames_advanced": Engine.get_physics_frames() - start,
 		"probes_before": before,
 		"probes_after": after,
-		"effect": "observed" if JSON.stringify(after) != JSON.stringify(before) else "none",
+		# Three states, not two. `world_only` is the one that matters: the act DID
+		# something, the probes chosen just could not see it. Reporting that as
+		# "none" is what teaches an agent to call a working mechanic broken.
+		"effect": (
+			"observed" if probes_moved
+			else ("world_only" if bool(world["moved"]) else "none")
+		),
+		"world_changed": changes,
 		# A first-person game typically gates ALL movement and mining on having the
 		# mouse captured, and releases it whenever it opens a menu. When that
 		# happens every later input lands and does nothing, which reads exactly
@@ -1727,6 +2571,23 @@ func _op_act(msg: Dictionary) -> Dictionary:
 	# sustained hold from a finished one, and a stuck input is invisible.
 	if not _sustained.is_empty():
 		reply["still_held"] = _sustained.keys()
+
+	# Foreign input DURING an act is reported and survivable, unlike the frozen
+	# case: the world was moving anyway, and a run costs up to $1 and 250 tool
+	# calls - one stray keypress that changed nothing must not kill it. But the
+	# caller has to be told, because it is the one explanation for a surprising
+	# act that no probe value can ever show.
+	if _foreign_in_act > 0:
+		reply["foreign_input"] = {
+			"count": _foreign_in_act,
+			"what": _foreign_labels,
+			"why": (
+				"input this session did not send reached the game while this act ran - somebody "
+				+ "touched the game under test. Anything unexpected in this act may be theirs "
+				+ "rather than the game's; if it decided your finding, report `blocked` and say "
+				+ "the game was touched instead of blaming the game."
+			),
+		}
 
 	# A value that builds while an input is held and falls once it is let go is the
 	# fingerprint of a hold-driven mechanic - and this act just let go of it. The
@@ -2153,6 +3014,7 @@ func _run_drive_body(runner: RefCounted, api: DriveApi, done: Dictionary) -> voi
 
 
 func _op_drive(msg: Dictionary) -> Dictionary:
+	_intent = String(msg.get("intent", ""))
 	var source := String(msg.get("source", ""))
 	if source.strip_edges().is_empty():
 		return {"ok": false, "error": "game_drive needs `source`: the statements of a GDScript function body"}

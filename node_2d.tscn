@@ -10,6 +10,7 @@
 [ext_resource type="Texture2D" uid="uid://csvurd8y1u8vy" path="res://assets/warehouse/warehouseBrownA.png" id="9_ir8iy"]
 [ext_resource type="Texture2D" uid="uid://du16km40rfl4w" path="res://assets/Park/gazebo.png" id="10_park"]
 [ext_resource type="Texture2D" uid="uid://cy6eb70r07cp6" path="res://assets/generated/sludge_pipe.png" id="11_sludge"]
+[ext_resource type="Texture2D" uid="uid://br13jls7dirc8" path="res://Mascot/bobr the speculator.png" id="12_bobr"]
 
 [sub_resource type="ButtonGroup" id="ButtonGroup_z3u88"]
 
@@ -43,6 +44,18 @@ theme_override_constants/separation = 12
 [node name="MoneyLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=632292605]
 layout_mode = 2
 size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
+theme_override_font_sizes/font_size = 24
+vertical_alignment = 1
+
+[node name="WorkersLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=813389156]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
+theme_override_font_sizes/font_size = 24
+vertical_alignment = 1
+
+[node name="GoodsLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=1680295633]
+layout_mode = 2
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
 theme_override_font_sizes/font_size = 24
 vertical_alignment = 1
@@ -145,3 +158,101 @@ texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
 ignore_texture_size = true
 stretch_mode = 5
+
+[node name="BobrDialogue" type="PanelContainer" parent="UI" unique_id=706820888]
+visible = false
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -330.0
+offset_top = -130.0
+offset_right = 330.0
+offset_bottom = 130.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MarginContainer" type="MarginContainer" parent="UI/BobrDialogue" unique_id=1351076483]
+layout_mode = 2
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 20
+
+[node name="HBoxContainer" type="HBoxContainer" parent="UI/BobrDialogue/MarginContainer" unique_id=1675440702]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="Mascot" type="TextureRect" parent="UI/BobrDialogue/MarginContainer/HBoxContainer" unique_id=2040938982]
+custom_minimum_size = Vector2(110, 120)
+layout_mode = 2
+size_flags_vertical = 4
+texture = ExtResource("12_bobr")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="VBoxContainer" type="VBoxContainer" parent="UI/BobrDialogue/MarginContainer/HBoxContainer" unique_id=578784953]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 16
+
+[node name="QuoteLabel" type="Label" parent="UI/BobrDialogue/MarginContainer/HBoxContainer/VBoxContainer" unique_id=119786466]
+custom_minimum_size = Vector2(360, 0)
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 20
+text = "Welcome to the Solarchain, Speculator!"
+autowrap_mode = 3
+
+[node name="DismissButton" type="Button" parent="UI/BobrDialogue/MarginContainer/HBoxContainer/VBoxContainer" unique_id=1029589718]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Dismiss"
+
+[node name="ObjectiveBox" type="PanelContainer" parent="UI" unique_id=381115293]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_top = 88.0
+offset_right = -16.0
+offset_bottom = 272.0
+grow_horizontal = 0
+
+[node name="MarginContainer" type="MarginContainer" parent="UI/ObjectiveBox" unique_id=1174678469]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="VBoxContainer" type="VBoxContainer" parent="UI/ObjectiveBox/MarginContainer" unique_id=381306780]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=1057980054]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
+theme_override_font_sizes/font_size = 20
+text = "Objectives"
+
+[node name="CheckResidential" type="CheckBox" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=1908133199]
+layout_mode = 2
+focus_mode = 0
+mouse_filter = 2
+text = "Build 2 Residential zones (0/2)"
+
+[node name="CheckFactory" type="CheckBox" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=2001062174]
+layout_mode = 2
+focus_mode = 0
+mouse_filter = 2
+text = "Build 1 Factory (0/1)"
+
+[node name="CheckRoad" type="CheckBox" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=535913852]
+layout_mode = 2
+focus_mode = 0
+mouse_filter = 2
+text = "Connect them with a Road (Pending)"

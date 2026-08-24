@@ -118,6 +118,11 @@ var dividend_percent: float = 0.0
 ## dividend-cost previews in the UI (updated every assessment cycle).
 var last_factory_income: int = 0
 
+## Optional provider of a per-tile goods-supply land-value bonus. Set by the
+## root scene's supply-chain simulation so well-supplied housing raises LVT and
+## thus tax/dividend output. Callable(Vector2i) -> int; leave invalid to disable.
+var goods_supply_bonus_provider: Callable
+
 # ---------------------------------------------------------------------------
 #   Signals
 # ---------------------------------------------------------------------------
@@ -276,6 +281,12 @@ func get_land_value(grid_pos: Vector2i) -> int:
 	if (t == GridCellData.TileType.RESIDENTIAL_LOW or t == GridCellData.TileType.RESIDENTIAL_HIGH) \
 			and _count_industrial_in_radius(grid_pos, POLLUTION_RADIUS) > 0:
 		value = int(value * POLLUTION_LV_MULTIPLIER)
+
+	# Supply-chain Step 1: well-supplied housing raises land value nearby, which
+	# flows straight into tax revenue (and the factory income that pays the
+	# dividend). Additive and clamped with everything else below.
+	if goods_supply_bonus_provider.is_valid():
+		value += goods_supply_bonus_provider.call(grid_pos)
 
 	return clampi(value, LAND_VALUE_FLOOR, LAND_VALUE_CEIL)
 
