@@ -826,6 +826,13 @@ func _run() -> void:
 	if img.is_empty():
 		printerr("ziva_input_harness: captured image is empty")
 		return
+	var longest: int = maxi(img.get_width(), img.get_height())
+	if longest > MAX_FRAME_EDGE:
+		img.resize(
+			img.get_width() * MAX_FRAME_EDGE / longest,
+			img.get_height() * MAX_FRAME_EDGE / longest,
+			Image.INTERPOLATE_LANCZOS
+		)
 	var results_tmp := String(_params["results_tmp"])
 	var err: int = img.save_png(results_tmp)
 	if err != OK:

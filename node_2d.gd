@@ -27,6 +27,13 @@ var _speculator: SpeculatorManager
 ## Placement controller — single owner of the player build pipeline.
 var _placement_controller: PlacementController
 
+## Pipe/logistics connectivity graph — the live BFS network for SLUDGE hookups.
+var _pipe_network: PipeNetworkManager
+
+## Factory pipe-status hover readout (built programmatically in _ready).
+var _factory_status_panel: PanelContainer
+var _factory_status_label: Label
+
 ## Grid dimensions for the starting map.
 const GRID_SIZE: int = 10
 
@@ -164,8 +171,11 @@ func _ready() -> void:
 	_speculator.speculator_claimed_tile.connect(claim_tile_for_speculator)
 
 	# Pipe/logistics network — cached BFS connectivity for SLUDGE hookups.
-	var pipe_network: PipeNetworkManager = _create_pipe_network_manager()
-	_economy.pipe_network = pipe_network
+	# Visual refreshes ride the network_changed signal so pipe sprites always
+	# reflect the latest live/dead connectivity.
+	_pipe_network = _create_pipe_network_manager()
+	_economy.pipe_network = _pipe_network
+	_pipe_network.network_changed.connect(_on_pipe_network_changed)
 
 	# Placement controller — single owner of the player build pipeline
 	# (cost lookup, placement rules, money deduction, grid and sprite writes).
@@ -175,7 +185,7 @@ func _ready() -> void:
 	_placement_controller.tilemap = _tilemap
 	_placement_controller.placement = _placement
 	_placement_controller.speculator = _speculator
-	_placement_controller.pipe_network = pipe_network
+	_placement_controller.pipe_network = _pipe_network
 	_placement_controller.grid_size = GRID_SIZE
 	add_child(_placement_controller)
 	# Demolishing a public park triggers a global industrial strike.
@@ -253,6 +263,10 @@ func _ready() -> void:
 	_dismiss_button.pressed.connect(_on_bobr_dialogue_dismiss)
 	_economy.assessment_completed.connect(_on_assessment_refresh_dividend)
 
+	# Hover readout showing a factory's pipe connectivity status (built in code
+	# so it needs no scene edits; hidden until the cursor is over a factory).
+	_create_factory_status_ui()
+
 	update_money_ui()
 	_update_resource_ui()
 	_update_objectives()
@@ -309,6 +323,7 @@ func _process(_delta: float) -> void:
 	if cell.x < 0 or cell.x >= GRID_SIZE or cell.y < 0 or cell.y >= GRID_SIZE:
 		_hover_sprite.visible = false
 		_last_hovered_cell = Vector2i(-1, -1)
+		_update_factory_status(cell)
 		return
 
 	# Position the highlight at the diamond centre of the hovered cell.
@@ -317,6 +332,9 @@ func _process(_delta: float) -> void:
 	if cell != _last_hovered_cell:
 		_hover_sprite.position = local
 		_last_hovered_cell = cell
+	# Factory pipe-status readout follows the cursor (checked every frame so it
+	# stays live when a build/demolish changes connectivity under the cursor).
+	_update_factory_status(cell)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -400,18 +418,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		prints("Placed", GridCellData.TileType.keys()[result.placed_type], "at", grid_pos)
 
 ## Called when the Road toggle button is switched on/off.
-## ON  → set build mode to ROAD, show Switch01 (active).
-## OFF → reset build mode to EMPTY, show Switch02 (inactive).
+## ON  → set build mode to ROAD. OFF → reset build mode to EMPTY.
+## The button icon is always the road01.png tile (like the other build icons),
+## so no switch-texture swapping happens here anymore.
 func _on_road_toggle_toggled(toggled_on: bool) -> void:
-	var btn: TextureButton = $UI/BuildBar/HBoxContainer/RoadToggle
 	if toggled_on:
 		current_build_mode = GridCellData.TileType.ROAD
-		btn.texture_normal = preload("res://Ui/Switch01.png")
 		_unpress_other_toggles("RoadToggle")
 		prints("Build mode: ROAD")
 	else:
 		current_build_mode = GridCellData.TileType.EMPTY
-		btn.texture_normal = preload("res://Ui/Switch02.png")
 		prints("Build mode: OFF")
 
 ## Called when the Factory toggle button is switched on/off.
@@ -638,7 +654,11 @@ func _on_supply_chain_tick() -> void:
 		if available_workers >= WORKERS_PER_FACTORY:
 			available_workers -= WORKERS_PER_FACTORY
 			operating_factories += 1
-			produced += GOODS_PER_FACTORY_TICK
+			# Logistics scaling: a factory's goods output is multiplied by its pipe
+			# hookup multiplier (+30% hooked / -50% missing). roundi() keeps the
+			# bonus/penalty visible at the small base yield (3 goods/tick).
+			var pipe_mult: float = _economy.factory_pipe_multiplier(pos)
+			produced += roundi(GOODS_PER_FACTORY_TICK * pipe_mult)
 	goods_stock += produced
 
 	# 3) Houses consume goods; record which ones were fed this tick.
@@ -863,6 +883,64 @@ func _resolve_tutorial() -> void:
 	prints("Bobr pays the land-value tax on his plot at", _bobr_dirt_lot)
 
 
+# ---- Pipe network visuals + factory status readout --------------------------
+
+## Refreshes pipe sprite tints whenever the logistics network changes (a pipe or
+## factory is placed/removed). Live border-connected segments render normally;
+## disconnected ones are dimmed via BuildingPlacement.
+func _on_pipe_network_changed() -> void:
+	_placement.update_pipe_visuals(_pipe_network.get_live_pipe_cells())
+
+
+## Builds the hover readout that shows a factory's pipe connectivity status.
+## Shown while the cursor is over an INDUSTRIAL tile; hidden otherwise.
+func _create_factory_status_ui() -> void:
+	var panel := PanelContainer.new()
+	panel.name = "FactoryStatusPanel"
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.09, 0.13, 0.85)
+	style.border_color = Color(0.87, 0.73, 0.35, 0.6)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(8)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 8
+	style.content_margin_bottom = 8
+	panel.add_theme_stylebox_override(&"panel", style)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE  # never block clicks
+	panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	panel.offset_left = 16.0
+	panel.offset_top = -150.0   # sit above the bottom BuildBar dock
+	panel.offset_right = 420.0
+	panel.offset_bottom = -94.0
+	panel.visible = false
+	$UI.add_child(panel)
+	_factory_status_panel = panel
+
+	var label := Label.new()
+	label.name = "FactoryStatusLabel"
+	label.add_theme_font_size_override(&"font_size", 16)
+	label.add_theme_color_override(&"font_color", Color(0.9, 0.9, 0.9))
+	panel.add_child(label)
+	_factory_status_label = label
+
+
+## Shows/hides the factory pipe-status readout for the currently hovered cell.
+func _update_factory_status(cell: Vector2i) -> void:
+	if _factory_status_panel == null:
+		return
+	var in_bounds: bool = (
+		cell.x >= 0 and cell.x < GRID_SIZE and cell.y >= 0 and cell.y < GRID_SIZE
+	)
+	var is_factory: bool = in_bounds \
+			and _grid.get_tile_type(cell) == GridCellData.TileType.INDUSTRIAL
+	_factory_status_panel.visible = is_factory
+	if is_factory:
+		var status: String = _economy.factory_pipe_status(cell)
+		if _factory_status_label.text != status:
+			_factory_status_label.text = status
+
+
 # ---- Bootstrap helper -------------------------------------------------------
 
 ## Creates and adds the EconomyManager as a child, then returns it.
@@ -882,6 +960,7 @@ func _create_placement_manager() -> BuildingPlacement:
 	var bp := BuildingPlacement.new()
 	bp.name = "BuildingPlacement"
 	bp.tilemap = _tilemap
+	bp.grid = _grid
 	add_child(bp)
 	return bp
 

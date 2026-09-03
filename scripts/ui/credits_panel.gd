@@ -12,7 +12,7 @@ const CREDITS_BUTTON_PATH := "../TopBar/HBoxContainer/CreditsButton"
 
 ## The full, ordered list of attributions shown in the panel.
 const CREDITS: Array[Dictionary] = [
-	{"title": "Playtesting & Feedback", "text": "Reddit user Fluffy_Cockroach_540"},
+	{"title": "Playtesting & Feedback", "text": "Reddit user white112506-2"},
 	{"title": "Art Assets", "text": "Isometric City Kit by Buggy Studio"},
 	{"title": "Music", "text": "\u201cThe Jazz Piano\u201d & \u201cJazz Comedy\u201d by Benjamin Tissot (Bensound)"},
 	{"title": "AI Assistants / Collaboration", "text": "Gemini & DeepSeek"},

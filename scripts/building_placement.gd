@@ -17,6 +17,17 @@ const SLUDGE_PIPE: Texture2D = preload("res://assets/generated/sludge_pipe.png")
 ## Reference to the TileMapLayer — set by the root scene after creation.
 var tilemap: TileMapLayer
 
+## Reference to the GridManager — lets pipe visual updates query tile types.
+var grid: GridManager
+
+## Full-brightness tint for live (border-connected) pipe sprites.
+const PIPE_LIVE_MODULATE: Color = Color(1, 1, 1, 1)
+## Dimmed tint for disconnected pipe sprites — dead lines read clearly.
+const PIPE_DEAD_MODULATE: Color = Color(0.5, 0.5, 0.5, 0.7)
+
+## Live pipe cells from the last PipeNetworkManager refresh (Vector2i → true).
+var _live_pipe_cells: Dictionary = {}
+
 ## Tracks building Sprite2D nodes keyed by grid position.
 var _sprites: Dictionary = {}
 
@@ -59,6 +70,11 @@ func spawn_building(cell: Vector2i, tile_type: int) -> void:
 	tilemap.add_child(sprite)
 	_sprites[cell] = sprite
 
+	# New pipe segments inherit the current live/dead tint immediately, so a
+	# freshly placed SLUDGE line that isn't border-connected shows dimmed.
+	if tile_type == GridCellData.TileType.SLUDGE:
+		_tint_pipe(cell)
+
 
 ## Removes the building sprite at the given cell, if one exists.
 func remove_building(cell: Vector2i) -> void:
@@ -72,6 +88,33 @@ func remove_building(cell: Vector2i) -> void:
 ## Returns true if a building sprite exists at the given cell.
 func has_building(cell: Vector2i) -> bool:
 	return _sprites.has(cell)
+
+
+## Refreshes pipe visuals from the network's live-cell set. Live (border-
+## connected) SLUDGE segments render at full brightness; disconnected ones are
+## dimmed so dead lines are visible at a glance. Called on every network change.
+func update_pipe_visuals(live_cells: Array[Vector2i]) -> void:
+	_live_pipe_cells.clear()
+	for c in live_cells:
+		_live_pipe_cells[c] = true
+	_apply_pipe_tints()
+
+
+## Applies the current live/dead tint to every pipe sprite on the board.
+func _apply_pipe_tints() -> void:
+	if grid == null:
+		return
+	for cell in _sprites:
+		if grid.get_tile_type(cell) == GridCellData.TileType.SLUDGE:
+			_tint_pipe(cell)
+
+
+## Tints a single pipe sprite according to whether its cell is in the live set.
+func _tint_pipe(cell: Vector2i) -> void:
+	var sprite: Node = _sprites.get(cell)
+	if not is_instance_valid(sprite) or not sprite is Sprite2D:
+		return
+	sprite.modulate = PIPE_LIVE_MODULATE if _live_pipe_cells.has(cell) else PIPE_DEAD_MODULATE
 
 
 func _texture_for_type(tile_type: int) -> Texture2D:

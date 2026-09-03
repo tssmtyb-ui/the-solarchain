@@ -357,6 +357,23 @@ func _factory_pipe_multiplier(factory_pos: Vector2i) -> float:
 	return UNHOOKED_FACTORY_MULTIPLIER
 
 
+## Public accessor for a factory's pipe/logistics production multiplier — the
+## same value the income loop uses. Lets the supply-chain simulation scale goods
+## output by the exact same hookup bonus/penalty.
+func factory_pipe_multiplier(factory_pos: Vector2i) -> float:
+	return _factory_pipe_multiplier(factory_pos)
+
+
+## Human-readable pipe-connectivity status for a factory, for the hover/inspect
+## UI. Mirrors factory_pipe_multiplier() so the readout always matches the math.
+func factory_pipe_status(factory_pos: Vector2i) -> String:
+	if pipe_network == null:
+		return "Pipe Status: No Network (Base Production)"
+	if pipe_network.is_factory_hooked_up(factory_pos):
+		return "Pipe Status: Connected (+%d%% Goods)" % int((HOOKED_FACTORY_MULTIPLIER - 1.0) * 100.0)
+	return "Pipe Status: Missing (-%d%% Penalty)" % int((1.0 - UNHOOKED_FACTORY_MULTIPLIER) * 100.0)
+
+
 ## Scans within WORKER_RADIUS of a factory position and counts nearby workers.
 ## RESIDENTIAL_LOW tiles contribute 1 worker, RESIDENTIAL_HIGH tiles contribute 3.
 ## Uses Manhattan distance (abs(dx) + abs(dy) <= WORKER_RADIUS) for the scan.

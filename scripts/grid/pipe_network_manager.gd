@@ -33,10 +33,16 @@ var _dirty: bool = true
 var _live_pipe_cells: Dictionary = {}
 
 
+## Emitted every time the cache is marked dirty — i.e. whenever a SLUDGE or
+## INDUSTRIAL tile is placed or removed. Lets the root scene refresh pipe
+## visuals against the freshly recomputed live-cell set.
+signal network_changed
+
 ## Marks the cached network as stale. Call whenever a SLUDGE or INDUSTRIAL tile
 ## is placed or removed so the next hookup query recomputes connectivity.
 func mark_dirty() -> void:
 	_dirty = true
+	network_changed.emit()
 
 
 ## Returns true if `factory_pos` has a live pipe in any cardinal neighbour —
