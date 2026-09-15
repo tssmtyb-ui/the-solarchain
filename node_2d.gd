@@ -35,13 +35,20 @@ var _factory_status_panel: PanelContainer
 var _factory_status_label: Label
 
 ## Grid dimensions for the starting map.
-const GRID_SIZE: int = 10
+const GRID_SIZE: int = 20
 
 ## Preloaded highlight texture for the mouse hover indicator.
 const HIGHLIGHT_TEXTURE: Texture2D = preload("res://assets/generated/highlight_diamond_clean.png")
 
 ## Tracks the last hovered cell so we can erase the old highlight.
 var _last_hovered_cell: Vector2i = Vector2i(-1, -1)
+
+## True while the player holds the left button in ROAD build mode to drag-build
+## a continuous road stroke.
+var _road_drag_active: bool = false
+## Grid cell where the current road-drag stroke last placed a tile — the anchor
+## used to gap-fill a straight line toward the cursor's current cell.
+var _last_drag_cell: Vector2i = Vector2i(-1, -1)
 
 ## The Sprite2D used for the mouse-hover highlight indicator.
 var _hover_sprite: Sprite2D = Sprite2D.new()
@@ -153,12 +160,6 @@ func _ready() -> void:
 	assert(_grid != null, "GridManager node missing!")
 	assert(_tilemap != null, "TileMapLayer node missing!")
 
-	# Make the Camera2D explicitly current and position it.
-	# With 512×256 tile size and 10×10 grid, centre is at roughly (2560, 128).
-	$Camera2D.make_current()
-	$Camera2D.position = Vector2(2560, 128)
-	$Camera2D.zoom = Vector2(0.2, 0.2)
-
 	# Wire up economy signal.
 	_economy.assessment_completed.connect(_on_assessment_completed)
 	_economy.residential_evolution_triggered.connect(_on_residential_evolution)
@@ -229,6 +230,37 @@ func _ready() -> void:
 	# --- Initialise a clean GRASS map with edge highway connections ---
 	_init_grass_grid()
 	_spawn_edge_highways()
+
+	# Camera setup after map initialization — compute bounds from all four
+	# corners of the populated TileMapLayer to handle isometric Diamond Right
+	# layout correctly. Two opposite corners don't work because the isometric
+	# transform maps them to different world positions.
+	$Camera2D.make_current()
+	$Camera2D.zoom = Vector2(0.2, 0.2)
+	var _used_rect := _tilemap.get_used_rect()
+	# All four grid corners converted to world coordinates.
+	var _corners := PackedVector2Array([
+		_tilemap.map_to_local(Vector2i(_used_rect.position.x, _used_rect.position.y)),
+		_tilemap.map_to_local(Vector2i(_used_rect.end.x - 1, _used_rect.position.y)),
+		_tilemap.map_to_local(Vector2i(_used_rect.position.x, _used_rect.end.y - 1)),
+		_tilemap.map_to_local(Vector2i(_used_rect.end.x - 1, _used_rect.end.y - 1)),
+	])
+	var _min_x := _corners[0].x
+	var _max_x := _corners[0].x
+	var _min_y := _corners[0].y
+	var _max_y := _corners[0].y
+	for _c in _corners:
+		_min_x = minf(_min_x, _c.x)
+		_max_x = maxf(_max_x, _c.x)
+		_min_y = minf(_min_y, _c.y)
+		_max_y = maxf(_max_y, _c.y)
+	# Slight padding so the camera isn't flush against the map edge.
+	var _margin := Vector2(128.0, 64.0)
+	$Camera2D.position = Vector2((_min_x + _max_x) / 2.0, (_min_y + _max_y) / 2.0)
+	$Camera2D.limit_left = _min_x - _margin.x
+	$Camera2D.limit_right = _max_x + _margin.x
+	$Camera2D.limit_top = _min_y - _margin.y
+	$Camera2D.limit_bottom = _max_y + _margin.y
 
 	# Start the economy immediately (timer auto-starts in EconomyManager._ready()).
 	_economy.calculate_net_income()
@@ -336,9 +368,74 @@ func _process(_delta: float) -> void:
 	# stays live when a build/demolish changes connectivity under the cursor).
 	_update_factory_status(cell)
 
+	# Road drag-build: while the left button is held in ROAD mode, extend a
+	# continuous stroke toward the hovered cell (gap-filled on fast drags).
+	if _road_drag_active:
+		_process_road_drag(cell)
+
+
+## Extends the road-drag stroke from the last placed cell to `target`, placing
+## a ROAD tile on every cell along the straight line between them. Blocked or
+## occupied cells are skipped silently; the stroke stops only if money runs out.
+func _process_road_drag(target: Vector2i) -> void:
+	if target == _last_drag_cell:
+		return
+	var path: Array[Vector2i] = _line_between(_last_drag_cell, target)
+	for i in range(1, path.size()):
+		var step: Vector2i = path[i]
+		var result: Dictionary = _placement_controller.attempt_build(
+				GridCellData.TileType.ROAD, step, current_money)
+		if result.ok:
+			current_money = result.money
+			# Keep road-connection state fresh for buildings along the stroke.
+			refresh_road_connections(step)
+		elif result.reason == "Not enough money!":
+			# Broke mid-stroke — stop placing, leave the stroke armed so the
+			# remaining cells are attempted only when money could change again.
+			break
+		# Any other failure (occupied, speculator-owned, …) is skipped silently.
+	_last_drag_cell = target
+	update_money_ui()
+	_update_resource_ui()
+	_update_objectives()
+
+
+## Returns every cell on the straight line from `a` to `b`, inclusive (Bresenham
+## line rasterisation). Road drags use this so a fast flick that jumps several
+## cells between frames still produces a contiguous road with no holes.
+func _line_between(a: Vector2i, b: Vector2i) -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	var x0: int = a.x
+	var y0: int = a.y
+	var x1: int = b.x
+	var y1: int = b.y
+	var dx: int = absi(x1 - x0)
+	var dy: int = absi(y1 - y0)
+	var sx: int = 1 if x0 < x1 else -1
+	var sy: int = 1 if y0 < y1 else -1
+	var err: int = dx - dy
+	while true:
+		cells.append(Vector2i(x0, y0))
+		if x0 == x1 and y0 == y1:
+			break
+		var e2: int = 2 * err
+		if e2 > -dy:
+			err -= dy
+			x0 += sx
+		if e2 < dx:
+			err += dx
+			y0 += sy
+	return cells
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if is_game_over:
+		return
+
+	# Releasing the left button ends any in-progress road-drag stroke.
+	if event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_road_drag_active = false
+		_last_drag_cell = Vector2i(-1, -1)
 		return
 
 	# Hotkeys: 5 = Park, 6 = Sludge (activates the matching UI toggle).
@@ -379,6 +476,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		_placement.remove_building(grid_pos)
 		prints("Hostile buyout of speculator land at", grid_pos)
 		return
+
+	# Begin a road-drag stroke on this press: the tile at the click is placed by
+	# the build below, and the anchor is recorded so _process can extend the
+	# stroke while the mouse is held. Only ROAD mode drags; all other tools stay
+	# single-click. Blocked clicks still arm the anchor so a stroke can begin
+	# from the cursor's position even over an occupied cell.
+	if current_build_mode == GridCellData.TileType.ROAD:
+		_road_drag_active = true
+		_last_drag_cell = grid_pos
 
 	# Delegate the whole build pipeline (cost lookup, placement rules, money
 	# deduction, grid writes, sprite spawning) to the placement controller.

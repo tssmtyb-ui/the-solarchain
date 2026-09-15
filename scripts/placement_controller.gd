@@ -126,7 +126,7 @@ var grid_size: int = 10
 # ---------------------------------------------------------------------------
 
 ## Maps GridCellData.TileType → { source_id, atlas_coords } for TileSet lookup.
-## Each texture is a single 512×256 isometric tile at atlas origin (0,0).
+## Each texture is a single 2048×1024 isometric tile at atlas origin (0,0).
 ## This is the same map that lived on the root scene; the root copy is
 ## deleted when node_2d.gd is migrated onto this controller.
 const TILE_TYPE_MAP: Dictionary = {
