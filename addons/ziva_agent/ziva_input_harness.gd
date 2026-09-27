@@ -75,6 +75,12 @@ const PAUSED_RENDER_FPS_CAP := 10
 # The prefix keeps enough to be useful; the marker carries the full length and a
 # hash of the full text, so a change past the cap still reads as a change.
 const PROBE_VALUE_MAX_CHARS := 4096
+# Entries in a Dictionary or Array before the log records its shape instead of
+# its contents. Well under anything var_to_str struggles with, and far past any
+# value worth reading in a ledger row.
+const CONTAINER_LOG_LIMIT := 512
+# How deep a container is walked before the log says so instead of recursing.
+const CONTAINER_LOG_DEPTH := 6
 
 # Physics frames a servo pulse tolerates the probed value not moving at all
 # before it stops blaming timing and names the real cause: this input does not
@@ -306,8 +312,6 @@ func _load_params() -> Dictionary:
 		["results_path", "results_tmp", "report_path", "started_path", "duration_ms", "inputs"]
 	)
 
-
-# ---------------------------------------------------------------- injection
 
 # Every edge this harness sends leaves through here, flagged. parse_input_event
 # and flush_buffered_events both dispatch synchronously, so _input() below runs
@@ -644,8 +648,6 @@ func _find_control_by_text(node: Node, target: String) -> Control:
 	return null
 
 
-# ------------------------------------------------------------------ schedule
-
 func _label(entry: Dictionary) -> String:
 	var kind: String = String(entry.get("type", "action"))
 	match kind:
@@ -758,8 +760,6 @@ func _read_back_text() -> Dictionary:
 			readback[target] = String(control.get("text"))
 	return readback
 
-
-# ------------------------------------------------------------------- capture
 
 func _run() -> void:
 	var inputs: Array = _params["inputs"]
@@ -903,7 +903,7 @@ func _start_session() -> void:
 		_ws = null
 
 
-# The window becomes a pane of glass the moment a session owns it: mouse events
+# A native window becomes a pane of glass when a session owns it: mouse events
 # pass through to whatever is behind it, so it can never be clicked, so it can
 # never take focus, so the host's keystrokes can never reach the game. Six
 # sessions of the Godotcraft run died to exactly that click-then-type path.
@@ -921,6 +921,13 @@ func _start_session() -> void:
 # reads the global singleton, which the host's real keyboard sets whether the game
 # is seated or not.
 func _put_up_glass() -> void:
+	# macOS's embedded display renders into the editor's Game tab. It has no
+	# native game window and only implements WINDOW_FLAG_TRANSPARENT; both flags
+	# below are no-ops that always read back false, not failed isolation attempts.
+	# The editor can still forward input, so _input's foreign-input detection
+	# remains necessary. Do not infer that an embedded session is isolated.
+	if DisplayServer.get_name() == "embedded":
+		return
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_MOUSE_PASSTHROUGH, true)
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, true)
 	if not DisplayServer.window_get_flag(DisplayServer.WINDOW_FLAG_MOUSE_PASSTHROUGH):
@@ -1088,8 +1095,6 @@ func _serve(text: String) -> void:
 	_serving = false
 
 
-# ------------------------------------------------------------------- probes
-
 # Probe values cross a JSON socket and are compared for equality, so every
 # non-JSON Variant becomes its var_to_str form ("Vector2(4, 5)") rather than
 # being silently dropped or mangled by JSON.stringify. Text is capped: a probe
@@ -1103,8 +1108,69 @@ func _jsonable(value: Variant) -> Variant:
 			return _capped(value)
 		TYPE_STRING_NAME, TYPE_NODE_PATH:
 			return _capped(String(value))
+		TYPE_OBJECT:
+			# var_to_str walks an Object's properties, and a Node's lead back to
+			# the tree, so serializing one recurses until the engine gives up and
+			# logs "Max recursion reached". Those lines are then diffed as NEW
+			# script errors and reported as a defect in the game under test - a
+			# false fail caused entirely by what the agent chose to look at.
+			return _describe_object(value)
+		TYPE_DICTIONARY, TYPE_ARRAY:
+			# Same failure by two more routes: `_block_types` on a voxel world is
+			# hundreds of thousands of entries, and an Array of Nodes -
+			# `tree.get_nodes_in_group(...)` - recurses through each node even
+			# when there are only two of them. Both measured live on Godotcraft.
+			# The caller still receives the real value; only this log line is
+			# summarized.
+			var count: int = value.size()
+			if count > CONTAINER_LOG_LIMIT:
+				return (
+					"<%s with %d entries - too large to record; the value itself was returned "
+					% [type_string(typeof(value)), count]
+					+ "to the caller, but refine the expression if you want it in the log>"
+				)
+			return _capped(var_to_str(_loggable(value, 0)))
 		_:
 			return _capped(var_to_str(value))
+
+
+## Replaces every Object inside a container with its identity, so nothing handed
+## to var_to_str can walk back into the scene tree. Depth-bounded as well: a
+## self-referential structure would otherwise recurse here instead.
+func _loggable(value: Variant, depth: int) -> Variant:
+	if depth > CONTAINER_LOG_DEPTH:
+		return "<deeper than %d levels>" % CONTAINER_LOG_DEPTH
+	match typeof(value):
+		TYPE_OBJECT:
+			return _describe_object(value)
+		TYPE_ARRAY:
+			var items := []
+			for item in value:
+				items.append(_loggable(item, depth + 1))
+			return items
+		TYPE_DICTIONARY:
+			var pairs := {}
+			for key in value:
+				pairs[str(key)] = _loggable(value[key], depth + 1)
+			return pairs
+		_:
+			return value
+
+
+## Identity, never contents: enough to tell one node from another in a log and
+## nothing that can recurse.
+func _describe_object(value: Variant) -> String:
+	if value == null:
+		return "<freed Object>"
+	var obj: Object = value
+	if obj is Node:
+		var node: Node = obj
+		# get_path() on a node outside the tree logs its own engine error, which
+		# is the exact thing this function exists to keep out of the console.
+		if node.is_inside_tree():
+			return "<%s %s>" % [node.get_class(), String(node.get_path())]
+		return "<%s %s, not in the tree>" % [node.get_class(), node.name]
+	return "<%s>" % obj.get_class()
 
 
 # The marker carries the full length and a hash of the FULL text: without the
@@ -1343,8 +1409,6 @@ func _first_probe_error(values: Dictionary) -> String:
 	return ""
 
 
-# ---------------------------------------------------------------- signal taps
-
 # game_watch: connect recorders so emissions between op boundaries stop being
 # invisible. A signal that fires MID-act - a latch, a death, a level-complete -
 # lands in no probe unless one happens to run at exactly the right op; a tap
@@ -1456,8 +1520,6 @@ func _record_event(key: String, args: Array) -> void:
 	})
 
 
-# ---------------------------------------------------------------- session ops
-
 func _op_observe(msg: Dictionary) -> Dictionary:
 	var values := _eval_all(msg.get("probes", []))
 	var bad := _first_probe_error(values)
@@ -1539,8 +1601,6 @@ func _capture_frame_raw() -> Dictionary:
 		"size": [img.get_width(), img.get_height()],
 	}
 
-
-# --------------------------------------------------------- recording the run
 
 # Called every process frame, recording or not. The pause check is the whole
 # "only while playing" rule and the whole contamination guard at once: the

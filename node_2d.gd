@@ -16,6 +16,7 @@ extends Node2D
 @onready var _objective_residential: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckResidential
 @onready var _objective_factory: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckFactory
 @onready var _objective_road: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckRoad
+@onready var _objective_sludge: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckSludgeLine
 @onready var _bobr_dialogue: PanelContainer = $UI/BobrDialogue
 @onready var _quote_label: Label = $UI/BobrDialogue/MarginContainer/HBoxContainer/VBoxContainer/QuoteLabel
 @onready var _dismiss_button: Button = $UI/BobrDialogue/MarginContainer/HBoxContainer/VBoxContainer/DismissButton
@@ -138,6 +139,8 @@ var _obj_residential: int = 0
 var _obj_factory: int = 0
 ## True once every placed house/factory sits adjacent to a road.
 var _obj_road_connected: bool = false
+## True once every placed factory is connected to the map edge by live sludge.
+var _obj_factories_hooked_up: bool = false
 
 ## Bobr's greeting to the new mayor, shown once at launch.
 const TUTORIAL_INTRO_QUOTE := "Aha, a new mayor! Do me a favor: build some roads and factories so land values skyrocket. Just don't touch that dividend slider... you want me to get rich, right?"
@@ -858,6 +861,7 @@ func _update_objectives() -> void:
 	_obj_factory = 0
 	var total_buildings: int = 0
 	var connected_buildings: int = 0
+	var hooked_factories: int = 0
 	for pos in _grid.get_all_occupied_positions():
 		var tile_type: int = _grid.get_tile_type(pos)
 		var is_residential: bool = (
@@ -868,6 +872,8 @@ func _update_objectives() -> void:
 			_obj_residential += 1
 		elif tile_type == GridCellData.TileType.INDUSTRIAL:
 			_obj_factory += 1
+			if _pipe_network.is_factory_hooked_up(pos):
+				hooked_factories += 1
 		else:
 			continue
 		total_buildings += 1
@@ -881,6 +887,7 @@ func _update_objectives() -> void:
 		and total_buildings > 0
 		and connected_buildings == total_buildings
 	)
+	_obj_factories_hooked_up = _obj_factory > 0 and hooked_factories == _obj_factory
 	_refresh_objective_ui()
 
 	# Tutorial Step 2: fire Bobr's land grab the moment the checklist completes.
@@ -901,6 +908,9 @@ func _refresh_objective_ui() -> void:
 		OBJECTIVE_FACTORY_TARGET, _obj_factory, OBJECTIVE_FACTORY_TARGET]
 	_objective_road.text = "Connect them with a Road (%s)" % (
 		"Connected" if _obj_road_connected else "Pending")
+	_objective_sludge.visible = _obj_factory > 0
+	_objective_sludge.button_pressed = _obj_factories_hooked_up
+	_objective_sludge.text = "Connect sludge line to map edge"
 
 
 # ---- Tutorial event triggers (Step 2) --------------------------------------

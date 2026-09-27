@@ -221,7 +221,7 @@ anchor_right = 1.0
 offset_left = -340.0
 offset_top = 88.0
 offset_right = -16.0
-offset_bottom = 272.0
+offset_bottom = 308.0
 grow_horizontal = 0
 
 [node name="MarginContainer" type="MarginContainer" parent="UI/ObjectiveBox" unique_id=1174678469]
@@ -258,3 +258,10 @@ layout_mode = 2
 focus_mode = 0
 mouse_filter = 2
 text = "Connect them with a Road (Pending)"
+
+[node name="CheckSludgeLine" type="CheckBox" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=466101657]
+visible = false
+layout_mode = 2
+focus_mode = 0
+mouse_filter = 2
+text = "Connect sludge line to map edge"
