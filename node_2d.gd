@@ -11,6 +11,7 @@ extends Node2D
 @onready var _money_label: Label = $UI/TopBar/HBoxContainer/MoneyLabel
 @onready var _workers_label: Label = $UI/TopBar/HBoxContainer/WorkersLabel
 @onready var _goods_label: Label = $UI/TopBar/HBoxContainer/GoodsLabel
+@onready var _factories_label: Label = $UI/TopBar/HBoxContainer/FactoriesLabel
 @onready var _dividend_slider: HSlider = $UI/TopBar/HBoxContainer/DividendBox/DividendSlider
 @onready var _dividend_label: Label = $UI/TopBar/HBoxContainer/DividendBox/DividendLabel
 @onready var _objective_residential: CheckBox = $UI/ObjectiveBox/MarginContainer/VBoxContainer/CheckResidential
@@ -87,10 +88,7 @@ const GOODS_PER_FACTORY_TICK: int = 3
 ## Goods each house consumes per tick (when the pool can afford it).
 const GOODS_PER_HOUSE_TICK: int = 1
 
-## Manhattan radius over which a well-supplied house boosts land value.
-const GOODS_BOOST_RADIUS: int = 2
-
-## Land-value bonus added per well-supplied house within the boost radius.
+## Land-value bonus added directly to each residence supplied with goods.
 const GOODS_LAND_VALUE_BOOST: int = 5
 
 ## Total worker capacity contributed by all residential tiles.
@@ -666,8 +664,16 @@ func _on_residential_evolution(grid_pos: Vector2i, new_tile_type: int) -> void:
 ## Refreshes the workforce and goods readouts in the TopBar from the live
 ## supply-chain state. Matches the MoneyLabel styling for a unified HUD.
 func _update_resource_ui() -> void:
+	var factory_count: int = 0
+	var staffed_factory_count: int = 0
+	for pos in _grid.get_all_occupied_positions():
+		if _grid.get_tile_type(pos) == GridCellData.TileType.INDUSTRIAL:
+			factory_count += 1
+			if _economy.staffed_factories.has(pos):
+				staffed_factory_count += 1
 	_workers_label.text = "Workers: %d/%d" % [available_workers, worker_capacity]
 	_goods_label.text = "Goods: %d" % goods_stock
+	_factories_label.text = "Factories: %d/%d" % [staffed_factory_count, factory_count]
 
 
 ## Updates the money label to reflect the current balance.
@@ -731,14 +737,13 @@ func _setup_supply_chain() -> void:
 	ticker.timeout.connect(_on_supply_chain_tick)
 	add_child(ticker)
 
-	_economy.goods_supply_bonus_provider = goods_supply_bonus_at
+	_economy.residential_goods_tax_bonus_provider = residential_goods_tax_bonus_at
 
 
-## One simulation tick. Order matters:
-##   1) Rebuild total worker capacity from every residential tile.
-##   2) Factories draw workers from the pool; staffed factories produce goods.
-##   3) Houses consume goods; houses that got fed are flagged so the economy's
-##      land value reflects a well-supplied neighbourhood.
+## One simulation tick. Residential tiles create workers, staffed road-connected
+## factories produce goods, and road-connected residences consume available goods.
+## Factory staffing is written to EconomyManager so income and goods production
+## use the same result until the next supply-chain tick.
 func _on_supply_chain_tick() -> void:
 	# 1) Rebuild worker capacity from residential tiles.
 	worker_capacity = 0
@@ -749,28 +754,27 @@ func _on_supply_chain_tick() -> void:
 			GridCellData.TileType.RESIDENTIAL_HIGH:
 				worker_capacity += WORKERS_PER_APARTMENT
 
-	# 2) Factories draw workers; each staffed factory produces goods.
+	# 2) Factories draw workers; the shared staffing set drives factory income too.
 	available_workers = worker_capacity
 	operating_factories = 0
+	_economy.staffed_factories.clear()
 	var produced: int = 0
 	for pos in _grid.get_all_occupied_positions():
 		if _grid.get_tile_type(pos) != GridCellData.TileType.INDUSTRIAL:
 			continue
-		# Step 2: disconnected factories stay idle — they draw no workers and
-		# produce nothing until a road is built next to them.
 		if not _road_connected.get(pos, false):
 			continue
 		if available_workers >= WORKERS_PER_FACTORY:
 			available_workers -= WORKERS_PER_FACTORY
 			operating_factories += 1
-			# Logistics scaling: a factory's goods output is multiplied by its pipe
-			# hookup multiplier (+30% hooked / -50% missing). roundi() keeps the
-			# bonus/penalty visible at the small base yield (3 goods/tick).
+			_economy.staffed_factories[pos] = true
+			# Pipe hookup scales output; roundi() keeps the effect visible at low yields.
 			var pipe_mult: float = _economy.factory_pipe_multiplier(pos)
 			produced += roundi(GOODS_PER_FACTORY_TICK * pipe_mult)
 	goods_stock += produced
 
-	# 3) Houses consume goods; record which ones were fed this tick.
+	# 3) Residences consume goods in grid order; fed residences receive a direct
+	# tax bonus through residential_goods_tax_bonus_at().
 	_goods_supplied.clear()
 	var supplied_houses: int = 0
 	for pos in _grid.get_all_occupied_positions():
@@ -778,7 +782,6 @@ func _on_supply_chain_tick() -> void:
 		if tile_type != GridCellData.TileType.RESIDENTIAL_LOW \
 				and tile_type != GridCellData.TileType.RESIDENTIAL_HIGH:
 			continue
-		# Step 2: disconnected houses consume nothing (and get no supply bonus).
 		if not _road_connected.get(pos, false):
 			continue
 		if goods_stock >= GOODS_PER_HOUSE_TICK:
@@ -790,25 +793,12 @@ func _on_supply_chain_tick() -> void:
 
 	prints("Supply chain: capacity=%d available=%d factories=%d goods=%d supplied=%d" % [
 		worker_capacity, available_workers, operating_factories, goods_stock, supplied_houses])
-
-	# Step 3: keep the TopBar resource readouts in sync with this tick's result.
 	_update_resource_ui()
 
 
-## Land-value bonus a tile receives from well-supplied houses within
-## GOODS_BOOST_RADIUS. Consulted by EconomyManager.get_land_value(), so a fed
-## neighbourhood raises its tax revenue — and, because factories also price on
-## land value, its dividend base too.
-func goods_supply_bonus_at(grid_pos: Vector2i) -> int:
-	var bonus: int = 0
-	for dx in range(-GOODS_BOOST_RADIUS, GOODS_BOOST_RADIUS + 1):
-		for dy in range(-GOODS_BOOST_RADIUS, GOODS_BOOST_RADIUS + 1):
-			if abs(dx) + abs(dy) > GOODS_BOOST_RADIUS:
-				continue
-			var adj: Vector2i = Vector2i(grid_pos.x + dx, grid_pos.y + dy)
-			if _goods_supplied.get(adj, false):
-				bonus += GOODS_LAND_VALUE_BOOST
-	return bonus
+## Direct tax bonus for a residence supplied with goods on the latest supply tick.
+func residential_goods_tax_bonus_at(grid_pos: Vector2i) -> int:
+	return GOODS_LAND_VALUE_BOOST if _goods_supplied.get(grid_pos, false) else 0
 
 
 # ---- Road network validation (Step 2) ---------------------------------------

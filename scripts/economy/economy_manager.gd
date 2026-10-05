@@ -46,12 +46,6 @@ const DOWNGRADE_LVT: int = 18
 ## prematurely. 20000 ms = 4 assessment cycles at the default 5 s interval.
 const EVOLUTION_COOLDOWN_MSEC: int = 20000
 
-## Worker radius and requirement for the factory labour dependency loop.
-## Factories scan for nearby housing within this Manhattan distance.
-const WORKER_RADIUS: int = 3
-## Workers required for a factory to operate at full efficiency.
-const REQUIRED_WORKERS: int = 2
-
 # ---------------------------------------------------------------------------
 #   If/Then event rules (GDD Priority 2)
 # ---------------------------------------------------------------------------
@@ -118,10 +112,13 @@ var dividend_percent: float = 0.0
 ## dividend-cost previews in the UI (updated every assessment cycle).
 var last_factory_income: int = 0
 
-## Optional provider of a per-tile goods-supply land-value bonus. Set by the
-## root scene's supply-chain simulation so well-supplied housing raises LVT and
-## thus tax/dividend output. Callable(Vector2i) -> int; leave invalid to disable.
-var goods_supply_bonus_provider: Callable
+## Optional direct per-residence goods tax bonus from the root supply simulation.
+## Callable(Vector2i) -> int; leave invalid to disable.
+var residential_goods_tax_bonus_provider: Callable
+
+## Factory positions staffed by the latest supply-chain tick. Shared with the
+## income assessment so production and factory income use identical staffing.
+var staffed_factories: Dictionary = {}
 
 # ---------------------------------------------------------------------------
 #   Signals
@@ -210,24 +207,21 @@ func calculate_net_income() -> void:
 			GridCellData.TileType.ROAD, GridCellData.TileType.ROAD_CROSS:
 				road_count += 1
 			GridCellData.TileType.INDUSTRIAL:
-				# Pollution is now purely Land Value-based (see get_land_value()).
-				# A park-demolition strike shuts down all factories: they earn $0
-				# while Time.get_ticks_msec() < industrial_strike_until_msec.
-				if Time.get_ticks_msec() >= industrial_strike_until_msec:
-					if _get_local_workers(pos) >= REQUIRED_WORKERS:
-						var base_factory: int = get_land_value(pos)
-						factory_income += base_factory
-						# Logistics (pipe hookup) + Dividend Policy production modifiers.
-						income += int(base_factory * _factory_pipe_multiplier(pos) \
-								* get_factory_boost_multiplier(dividend_percent))
-					else:
-						prints("Factory at", pos, "is idle! Not enough workers.")
+				# Both goods production and factory income use the latest shared
+				# staffing decision from the supply-chain simulation.
+				if staffed_factories.has(pos) \
+						and Time.get_ticks_msec() >= industrial_strike_until_msec:
+					var base_factory: int = get_land_value(pos)
+					factory_income += base_factory
+					# Logistics (pipe hookup) + Dividend Policy production modifiers.
+					income += int(base_factory * _factory_pipe_multiplier(pos) \
+							* get_factory_boost_multiplier(dividend_percent))
 			GridCellData.TileType.WAREHOUSE:
 				income += get_land_value(pos)
 			GridCellData.TileType.RESIDENTIAL_LOW:
 				var lv: int = get_land_value(pos)
 				if lv <= MAX_VILLA_LAND_VALUE:
-					income += lv
+					income += lv + _goods_tax_bonus_for_residence(pos)
 				else:
 					prints("RESIDENTIAL_LOW at", pos, "pays $0 — land value too high.")
 				# Auto-evolution: land value crossed the upgrade threshold.
@@ -236,7 +230,7 @@ func calculate_net_income() -> void:
 					residential_evolution_triggered.emit(pos, GridCellData.TileType.RESIDENTIAL_HIGH)
 			GridCellData.TileType.RESIDENTIAL_HIGH:
 				var lv_high: int = get_land_value(pos)
-				income += lv_high * 2
+				income += lv_high * 2 + _goods_tax_bonus_for_residence(pos)
 				# Auto-evolution: land value collapsed below the downgrade threshold.
 				if lv_high <= DOWNGRADE_LVT and _evolution_cooldown_elapsed(pos, current_time):
 					tile_build_times[pos] = current_time
@@ -282,18 +276,19 @@ func get_land_value(grid_pos: Vector2i) -> int:
 			and _count_industrial_in_radius(grid_pos, POLLUTION_RADIUS) > 0:
 		value = int(value * POLLUTION_LV_MULTIPLIER)
 
-	# Supply-chain Step 1: well-supplied housing raises land value nearby, which
-	# flows straight into tax revenue (and the factory income that pays the
-	# dividend). Additive and clamped with everything else below.
-	if goods_supply_bonus_provider.is_valid():
-		value += goods_supply_bonus_provider.call(grid_pos)
-
 	return clampi(value, LAND_VALUE_FLOOR, LAND_VALUE_CEIL)
 
 
 # ---------------------------------------------------------------------------
 #   Internal helpers
 # ---------------------------------------------------------------------------
+
+## Returns the direct tax bonus for a residence supplied on the latest goods tick.
+func _goods_tax_bonus_for_residence(grid_pos: Vector2i) -> int:
+	if not residential_goods_tax_bonus_provider.is_valid():
+		return 0
+	return residential_goods_tax_bonus_provider.call(grid_pos)
+
 
 ## Returns true if the tile's evolution cooldown has elapsed (or the tile has
 ## never been auto-evolved), so density changes can't flicker on thresholds.
@@ -372,30 +367,6 @@ func factory_pipe_status(factory_pos: Vector2i) -> String:
 	if pipe_network.is_factory_hooked_up(factory_pos):
 		return "Pipe Status: Connected (+%d%% Goods)" % int((HOOKED_FACTORY_MULTIPLIER - 1.0) * 100.0)
 	return "Pipe Status: Missing (-%d%% Penalty)" % int((1.0 - UNHOOKED_FACTORY_MULTIPLIER) * 100.0)
-
-
-## Scans within WORKER_RADIUS of a factory position and counts nearby workers.
-## RESIDENTIAL_LOW tiles contribute 1 worker, RESIDENTIAL_HIGH tiles contribute 3.
-## Uses Manhattan distance (abs(dx) + abs(dy) <= WORKER_RADIUS) for the scan.
-func _get_local_workers(factory_pos: Vector2i) -> int:
-	var count: int = 0
-	for dx in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
-		for dy in range(-WORKER_RADIUS, WORKER_RADIUS + 1):
-			if abs(dx) + abs(dy) > WORKER_RADIUS:
-				continue
-			var pos: Vector2i = Vector2i(factory_pos.x + dx, factory_pos.y + dy)
-			if pos.x < 0 or pos.x >= grid_size or pos.y < 0 or pos.y >= grid_size:
-				continue
-			var tile_type: int = grid.get_tile_type(pos)
-			match tile_type:
-				GridCellData.TileType.RESIDENTIAL_LOW:
-					if get_land_value(pos) > MAX_VILLA_LAND_VALUE:
-						prints("Villa at", pos, "abandoned! Land value too high.")
-					else:
-						count += 1
-				GridCellData.TileType.RESIDENTIAL_HIGH:
-					count += 3
-	return count
 
 
 ## Spekulationsspärren: sums 2x LVT for every claimed tile left unbuilt longer

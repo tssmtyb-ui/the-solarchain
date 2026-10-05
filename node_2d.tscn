@@ -62,6 +62,12 @@ theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
 theme_override_font_sizes/font_size = 24
 vertical_alignment = 1
 
+[node name="FactoriesLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=1390769111]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
+theme_override_font_sizes/font_size = 24
+vertical_alignment = 1
+
 [node name="DividendBox" type="VBoxContainer" parent="UI/TopBar/HBoxContainer" unique_id=1000000103]
 layout_mode = 2
 alignment = 1

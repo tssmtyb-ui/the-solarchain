@@ -1,3 +1,4 @@
-res://node_2d.tscn
 res://node_2d.gd
+res://node_2d.tscn
+res://scripts/economy/economy_manager.gd
 res://assets/spekulant_tileset.tres
