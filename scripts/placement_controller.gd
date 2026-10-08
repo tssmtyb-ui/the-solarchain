@@ -150,9 +150,9 @@ const TILE_TYPE_MAP: Dictionary = {
 #   Signals
 # ---------------------------------------------------------------------------
 
-## Emitted when the player successfully demolishes a public PARK. The root scene
-## forwards this to the economy, which triggers a global industrial strike.
-signal park_demolished
+## Emitted with the grid position when a public PARK is demolished so the
+## economy can strike the nearest factory.
+signal park_demolished(park_pos: Vector2i)
 
 # ---------------------------------------------------------------------------
 #   Public API
@@ -260,10 +260,9 @@ func attempt_bulldoze(grid_pos: Vector2i, current_money: int) -> Dictionary:
 	if pipe_network != null and _is_network_relevant(existing):
 		pipe_network.mark_dirty()
 
-	# Demolishing a public park provokes a global industrial strike (0% refund
-	# is already the default — bulldozing returns money unchanged).
+	# Demolishing a public park provokes a local strike at the nearest factory.
 	if existing == GridCellData.TileType.PARK:
-		park_demolished.emit()
+		park_demolished.emit(grid_pos)
 
 	return { "ok": true, "money": current_money, "placed_type": GridCellData.TileType.GRASS }
 

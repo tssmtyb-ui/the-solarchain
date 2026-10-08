@@ -1,4 +1,7 @@
 res://node_2d.gd
-res://node_2d.tscn
+res://scripts/placement_controller.gd
 res://scripts/economy/economy_manager.gd
+res://scripts/building_placement.gd
+res://scripts/grid/pipe_network_manager.gd
+res://node_2d.tscn
 res://assets/spekulant_tileset.tres

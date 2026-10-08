@@ -24,9 +24,14 @@ var grid: GridManager
 const PIPE_LIVE_MODULATE: Color = Color(1, 1, 1, 1)
 ## Dimmed tint for disconnected pipe sprites — dead lines read clearly.
 const PIPE_DEAD_MODULATE: Color = Color(0.5, 0.5, 0.5, 0.7)
+## Warm warning tint for a live network operating at or above its capacity.
+const PIPE_BOTTLENECK_MODULATE: Color = Color(1.0, 0.32, 0.16, 1.0)
 
 ## Live pipe cells from the last PipeNetworkManager refresh (Vector2i → true).
 var _live_pipe_cells: Dictionary = {}
+
+## Pipe cells belonging to a network at or above full utilization.
+var _bottleneck_pipe_cells: Dictionary = {}
 
 ## Tracks building Sprite2D nodes keyed by grid position.
 var _sprites: Dictionary = {}
@@ -90,31 +95,46 @@ func has_building(cell: Vector2i) -> bool:
 	return _sprites.has(cell)
 
 
-## Refreshes pipe visuals from the network's live-cell set. Live (border-
-## connected) SLUDGE segments render at full brightness; disconnected ones are
-## dimmed so dead lines are visible at a glance. Called on every network change.
-func update_pipe_visuals(live_cells: Array[Vector2i]) -> void:
+## Refreshes pipe visuals from live and saturated network cells. Live pipes are
+## bright, disconnected pipes dim, and capacity-limited network pipes warn red.
+func update_pipe_visuals(live_cells: Array[Vector2i], bottleneck_cells: Array[Vector2i] = []) -> void:
 	_live_pipe_cells.clear()
-	for c in live_cells:
-		_live_pipe_cells[c] = true
+	for cell: Vector2i in live_cells:
+		_live_pipe_cells[cell] = true
+	_bottleneck_pipe_cells.clear()
+	for cell: Vector2i in bottleneck_cells:
+		_bottleneck_pipe_cells[cell] = true
 	_apply_pipe_tints()
 
 
-## Applies the current live/dead tint to every pipe sprite on the board.
+## Updates only the overload set after a supply tick, preserving live topology.
+func update_pipe_capacity_visuals(bottleneck_cells: Array[Vector2i]) -> void:
+	_bottleneck_pipe_cells.clear()
+	for cell: Vector2i in bottleneck_cells:
+		_bottleneck_pipe_cells[cell] = true
+	_apply_pipe_tints()
+
+
+## Applies the current live/dead and bottleneck tint to every pipe sprite.
 func _apply_pipe_tints() -> void:
 	if grid == null:
 		return
-	for cell in _sprites:
+	for cell: Vector2i in _sprites:
 		if grid.get_tile_type(cell) == GridCellData.TileType.SLUDGE:
 			_tint_pipe(cell)
 
 
-## Tints a single pipe sprite according to whether its cell is in the live set.
+## Tints a pipe by priority: disconnected, saturated, then normal live.
 func _tint_pipe(cell: Vector2i) -> void:
 	var sprite: Node = _sprites.get(cell)
 	if not is_instance_valid(sprite) or not sprite is Sprite2D:
 		return
-	sprite.modulate = PIPE_LIVE_MODULATE if _live_pipe_cells.has(cell) else PIPE_DEAD_MODULATE
+	if not _live_pipe_cells.has(cell):
+		sprite.modulate = PIPE_DEAD_MODULATE
+	elif _bottleneck_pipe_cells.has(cell):
+		sprite.modulate = PIPE_BOTTLENECK_MODULATE
+	else:
+		sprite.modulate = PIPE_LIVE_MODULATE
 
 
 func _texture_for_type(tile_type: int) -> Texture2D:

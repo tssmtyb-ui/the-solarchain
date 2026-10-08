@@ -13,8 +13,8 @@ extends Node
 # It runs in one of two modes, chosen by which sidecar the tool left behind:
 #
 # - batch (run_scene): replay the timed `inputs`, record what each press/release
-#   edge actually cost in frames and ms, capture the root texture onto
-#   results_path and reply "ziva_pt:captured" through the debugger.
+#   edge actually cost in frames and ms, and capture the root texture onto
+#   results_path.
 # - session (QA session): dial plugin-server's socket and serve
 #   act/observe/watch/drive/stop ops turn by turn, holding the tree paused
 #   between them so the world cannot move while the caller is deciding. Probe
@@ -119,6 +119,30 @@ const CAPTURE_EVERY_PHYSICS := 2
 # while recording against 59.05Hz while not.
 const RECORD_JPEG_QUALITY := 0.75
 
+# ------------------------------------------------------------------- speed
+
+const SPEED_MONITORS := {
+	"process_ms": ["TIME_PROCESS"],
+	"physics_ms": ["TIME_PHYSICS_PROCESS"],
+	"navigation_ms": ["TIME_NAVIGATION_PROCESS"],
+	"draw_calls": ["RENDER_TOTAL_DRAW_CALLS_IN_FRAME"],
+	"objects_drawn": ["RENDER_TOTAL_OBJECTS_IN_FRAME"],
+	"primitives": ["RENDER_TOTAL_PRIMITIVES_IN_FRAME"],
+	"nodes": ["OBJECT_NODE_COUNT"],
+	"orphan_nodes": ["OBJECT_ORPHAN_NODE_COUNT"],
+	"physics_bodies": ["PHYSICS_2D_ACTIVE_OBJECTS", "PHYSICS_3D_ACTIVE_OBJECTS"],
+	"collision_pairs": ["PHYSICS_2D_COLLISION_PAIRS", "PHYSICS_3D_COLLISION_PAIRS"],
+	"shader_compiles_total": [
+		"PIPELINE_COMPILATIONS_CANVAS",
+		"PIPELINE_COMPILATIONS_MESH",
+		"PIPELINE_COMPILATIONS_SURFACE",
+		"PIPELINE_COMPILATIONS_DRAW",
+		"PIPELINE_COMPILATIONS_SPECIALIZATION",
+	],
+}
+const SPEED_CENSUS_TOP := 15
+const EDITOR_REPLY_TIMEOUT_MS := 3000
+
 # Frames on disk before the stride DOUBLES and every second frame already
 # written is deleted. p90 of a real run is 498s of live play - about 15k frames
 # - so a recorder that simply stopped at the cap would bite one run in five and
@@ -133,17 +157,16 @@ const MAX_FRAMES := 9000
 # lets the e2e gate probe the caption panel and the REC badge by coordinate.
 const OVERLAY_LAYER := 128
 const OVERLAY_PAD := 24.0
-const CAPTION_HEIGHT := 132.0
 const CHIP_HEIGHT := 34.0
 const CAPTION_FONT_SIZE := 28
-# The floor the caption is allowed to shrink to before it is ellipsized instead.
+# The floor the caption font shrinks to (see _fit_caption). A goal still too wide
+# at this size is drawn untrimmed; nothing ellipsizes it.
 const CAPTION_FONT_MIN := 16
 const CHIP_FONT_SIZE := 22
 # Opaque, not translucent: the gate reads these colours back out of a lossy
 # JPEG, and a panel blended over the game is a different colour in every frame.
 const PANEL_COLOR := Color(0.05, 0.06, 0.09)
-# The caption floats OVER the game, so it is translucent - the look the minigolf
-# spike had before the gate's pixel probes forced an opaque band.
+# The caption floats OVER the game, so it is translucent.
 const CAPTION_PANEL_COLOR := Color(0.05, 0.06, 0.09, 0.72)
 const CHIP_PANEL_COLOR := Color(0.06, 0.07, 0.10, 0.82)
 const CAPTION_SUB_FONT_SIZE := 20
@@ -183,7 +206,6 @@ var _events_dropped := 0
 # restore it. -1 = not captured yet (max_fps itself is never negative).
 var _running_max_fps: int = -1
 var _params: Dictionary = {}
-var _entries: Array = []
 var _start_ms: int = 0
 var _start_frame: int = 0
 # target -> Control, for the click-to-focus + text readback below.
@@ -243,18 +265,21 @@ var _sig_ripples := -1
 var _sig_frozen := false
 var _trail: Array = []
 var _ripples: Array = []
+var _speed_on := false
+var _speed: Dictionary = {}
+var _speed_monitors: Dictionary = {}
+var _speed_last_usec := 0
+var _editor_replies: Dictionary = {}
 
 
 func _ready() -> void:
-	# Owning the "ziva_pt" capture reserves the channel and mirrors the editor-side
-	# EditorDebuggerPlugin; the actual capture below is self-driven.
 	if EngineDebugger.is_active() and not EngineDebugger.has_capture("ziva_pt"):
 		EngineDebugger.register_message_capture("ziva_pt", _on_capture)
 	if FileAccess.file_exists(SESSION_PATH):
 		# Two autoloads pointing at this script means two harnesses dialling one
 		# session. The second socket is refused with a 409 and the game then quits
-		# - silent, baffling, and it cost a spike an hour. A duplicate now stands
-		# down loudly and lets the first one work.
+		# - silent and baffling. A duplicate stands down loudly and lets the first
+		# one work.
 		if get_tree().get_nodes_in_group(HARNESS_GROUP).size() > 0:
 			printerr(
 				"ziva_input_harness: this script is registered as MORE THAN ONE autoload in "
@@ -278,8 +303,20 @@ func _ready() -> void:
 	_run.call_deferred()
 
 
-func _on_capture(_message: String, _data: Array) -> bool:
+func _on_capture(message: String, data: Array) -> bool:
+	_editor_replies[message] = data
 	return true
+
+
+func _ask_editor(message: String, reply: String) -> Variant:
+	if not EngineDebugger.is_active():
+		return null
+	_editor_replies.erase(reply)
+	EngineDebugger.send_message("ziva_pt:" + message, [])
+	var deadline := Time.get_ticks_msec() + EDITOR_REPLY_TIMEOUT_MS
+	while not _editor_replies.has(reply) and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+	return _editor_replies.get(reply)
 
 
 # The sidecar is written by the tool immediately before the run. Anything wrong
@@ -459,8 +496,6 @@ func _button_index(entry: Dictionary) -> MouseButton:
 # `button` is a word, not a Godot button index. A caller sending 1 means "left",
 # but str(1) is not "left", so it would quietly become a left click - and a
 # right-click test that passes by left-clicking is worse than one that fails.
-# Until this check existed, an integer here crashed on String(int), which has no
-# constructor, and the run saw only "Invalid call 'String' constructor".
 func _button_error(entry: Dictionary) -> String:
 	if not entry.has("button"):
 		return ""
@@ -788,9 +823,16 @@ func _run() -> void:
 	for i in inputs.size():
 		records.append(_new_record(i, inputs[i]))
 
+	var speed_params: Dictionary = _params.get("speed", {})
+	var profiler_error := ""
+	if not speed_params.is_empty():
+		profiler_error = await _start_speed(bool(speed_params.get("scripts", false)))
+
 	_start_ms = Time.get_ticks_msec()
 	_start_frame = Engine.get_process_frames()
+	_speed_on = not speed_params.is_empty()
 	await _replay(inputs, duration_ms, records)
+	_speed_on = false
 
 	var undelivered: Array = []
 	for record in records:
@@ -810,6 +852,8 @@ func _run() -> void:
 		"undelivered": undelivered,
 		"text_readback": _read_back_text(),
 	}
+	if not speed_params.is_empty():
+		report["speed"] = await _finish_speed(bool(speed_params.get("scripts", false)), profiler_error)
 
 	for i in range(SETTLE_FRAMES):
 		await get_tree().process_frame
@@ -860,8 +904,117 @@ func _run() -> void:
 		printerr("ziva_input_harness: rename to results path failed err " + str(err))
 		return
 
-	if EngineDebugger.is_active():
-		EngineDebugger.send_message("ziva_pt:captured", [results_path])
+
+func _start_speed(scripts: bool) -> String:
+	_speed_monitors = {}
+	for key in SPEED_MONITORS:
+		var ids: Array = []
+		for name in SPEED_MONITORS[key]:
+			if ClassDB.class_has_integer_constant("Performance", name):
+				ids.append(ClassDB.class_get_integer_constant("Performance", name))
+		if not ids.is_empty():
+			_speed_monitors[key] = ids
+	_speed = {"frame": [], "t_ms": [], "frame_ms": [], "render_cpu_ms": [], "render_gpu_ms": []}
+	for key in _speed_monitors:
+		_speed[key] = []
+	_speed_last_usec = 0
+	RenderingServer.viewport_set_measure_render_time(get_tree().get_root().get_viewport_rid(), true)
+	_speed["census_start"] = _speed_census()
+	if not scripts:
+		return ""
+	var reply: Variant = await _ask_editor("profile_start", "profiling")
+	if reply == null:
+		return "the editor did not answer the profiler request"
+	if not (reply is Array) or reply.is_empty() or not bool(reply[0]):
+		return String(reply[1]) if reply is Array and reply.size() > 1 else "the editor could not start the profiler"
+	return ""
+
+
+func _tick_speed() -> void:
+	if not _speed_on:
+		return
+	var now := Time.get_ticks_usec()
+	if _speed_last_usec == 0:
+		_speed_last_usec = now
+		return
+	_speed["frame"].append(Engine.get_process_frames())
+	_speed["t_ms"].append(_now_ms())
+	_speed["frame_ms"].append(snappedf((now - _speed_last_usec) / 1000.0, 0.01))
+	_speed_last_usec = now
+	for key in _speed_monitors:
+		var total := 0.0
+		for id in _speed_monitors[key]:
+			total += Performance.get_monitor(id as Performance.Monitor)
+		_speed[key].append(snappedf(total * 1000.0 if key.ends_with("_ms") else total, 0.01))
+	var viewport := get_tree().get_root().get_viewport_rid()
+	_speed["render_cpu_ms"].append(
+		snappedf(
+			RenderingServer.viewport_get_measured_render_time_cpu(viewport)
+			+ RenderingServer.get_frame_setup_time_cpu(),
+			0.01
+		)
+	)
+	_speed["render_gpu_ms"].append(
+		snappedf(RenderingServer.viewport_get_measured_render_time_gpu(viewport), 0.01)
+	)
+
+
+func _finish_speed(scripts: bool, profiler_error: String) -> Dictionary:
+	_speed["census_end"] = _speed_census()
+	_speed["physics_ticks_per_second"] = Engine.physics_ticks_per_second
+	_speed["max_fps"] = Engine.max_fps
+	_speed["vsync"] = DisplayServer.window_get_vsync_mode() != DisplayServer.VSYNC_DISABLED
+	_speed["renderer"] = (
+		RenderingServer.call("get_current_rendering_method")
+		if RenderingServer.has_method("get_current_rendering_method")
+		else ProjectSettings.get_setting("rendering/renderer/rendering_method")
+	)
+	_speed["debug_build"] = OS.is_debug_build()
+	if not scripts:
+		return _speed
+	if profiler_error != "":
+		_speed["profiler_error"] = profiler_error
+		return _speed
+	var reply: Variant = await _ask_editor("profile_stop", "profile_saved")
+	if not (reply is Array) or reply.is_empty():
+		_speed["profiler_error"] = "the editor did not save the profiler data"
+		return _speed
+	var path := String(reply[0])
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		_speed["profiler_error"] = "could not read the profiler data at " + path
+		return _speed
+	var parsed: Variant = JSON.parse_string(file.get_as_text())
+	file.close()
+	if parsed is Dictionary:
+		_speed["profiler"] = parsed
+	else:
+		_speed["profiler_error"] = "the profiler data at " + path + " is not a JSON object"
+	return _speed
+
+
+func _speed_census() -> Dictionary:
+	var counts: Dictionary = {}
+	var stack: Array = [get_tree().get_root()]
+	var visited := 0
+	while not stack.is_empty() and visited < DIGEST_NODE_LIMIT:
+		var node: Node = stack.pop_back()
+		visited += 1
+		if node == self:
+			continue
+		var script: Variant = node.get_script()
+		var key := node.get_class()
+		if script is Script and (script as Script).resource_path != "":
+			key = (script as Script).resource_path
+		counts[key] = int(counts.get(key, 0)) + 1
+		for child in node.get_children():
+			stack.push_back(child)
+	var keys: Array = counts.keys()
+	keys.sort_custom(func(a, b): return counts[a] > counts[b])
+	var top: Dictionary = {}
+	for key in keys.slice(0, SPEED_CENSUS_TOP):
+		top[key] = counts[key]
+	return {"visited": visited, "truncated": not stack.is_empty(), "top": top}
 
 
 # ------------------------------------------------------------------- session
@@ -947,6 +1100,7 @@ func _put_up_glass() -> void:
 
 
 func _process(delta: float) -> void:
+	_tick_speed()
 	_tick_recorder(delta)
 	if _ws == null:
 		return
@@ -1247,12 +1401,8 @@ func _eval_raw(expression: String) -> Dictionary:
 # more sensitive than the text form (see the identity fold below).
 # ---------------------------------------------------- what the WORLD did
 #
-# `effect` used to mean "did the GDScript strings the caller happened to choose
-# change value". That is not what the caller reads it as: the system prompt
-# turns a null result into a verdict about the GAME. Measured cost of the
-# difference - a run pressed E while probing `_hud.visible`, got `effect: none`,
-# and concluded the inventory was broken. It was not; the right probe was
-# `is_inventory_open()`. The agent abandoned a working mechanic and paid for it.
+# The system prompt turns a null `effect` into a verdict about the GAME, not
+# about whether the GDScript strings the caller happened to choose changed value.
 #
 # So the world is measured independently of the caller's probes. Everything here
 # is derivable with NO per-game knowledge - verified against two unrelated games
@@ -1371,11 +1521,7 @@ func _is_number(v: Variant) -> bool:
 
 
 # `until` is satisfied when its expression HOLDS, GDScript-truthily: false, 0,
-# 0.0, "" and null do not hold, everything else does. It used to be satisfied by
-# the value merely CHANGING from its pre-act baseline, which inverted on a
-# predicate that was already true - "distance < 2" starting true waited for it
-# to become FALSE, burned its whole timeout on a condition that held the entire
-# time, and then reported failure.
+# 0.0, "" and null do not hold, everything else does.
 func _truthy(value: Variant) -> bool:
 	match typeof(value):
 		TYPE_NIL:
@@ -1806,10 +1952,7 @@ func _draw_overlay() -> void:
 	_overlay_draw.draw_line(cursor - Vector2(0, 22), cursor + Vector2(0, 22), CURSOR_COLOR, 2.0)
 
 	# Two lines, sized to their own text and floated over the game rather than a
-	# band laid across it. The full-width opaque bar this replaces existed only so
-	# the gate could read a flat colour out of a lossy JPEG; the sentinel strips
-	# below carry that job now, and cost ~700 pixels instead of a fifth of the
-	# frame.
+	# band laid across it.
 	# Falls back to the SESSION's goal, not to a shrug. The five settle frames
 	# after every game_start are recorded before any act exists, and across a run
 	# with many restarts those frames were most of the footage - all of them
@@ -1895,16 +2038,14 @@ func _draw_overlay() -> void:
 	)
 
 	# Sentinel strips: the ONLY thing the e2e reads by coordinate. Opaque, so a
-	# lossy JPEG keeps their colour; tiny, so they cost the viewer nothing. The
-	# overlay above is now free to be designed for a person instead of a probe.
+	# lossy JPEG keeps their colour; tiny, so they cost the viewer nothing.
 	_overlay_draw.draw_rect(Rect2(SENTINEL_X, SENTINEL_Y, SENTINEL_W, SENTINEL_H), PANEL_COLOR)
 	if not labels.is_empty():
 		_overlay_draw.draw_rect(
 			Rect2(SENTINEL_X + SENTINEL_W + 8.0, SENTINEL_Y, SENTINEL_W, SENTINEL_H), CHIP_COLOR
 		)
 	# Recording state gets a sentinel of its own so the gate never has to sample
-	# the badge itself - that coupling is what dragged the badge into the corner
-	# a game was already using.
+	# the badge itself.
 	if not frozen:
 		_overlay_draw.draw_rect(
 			Rect2(SENTINEL_X + (SENTINEL_W + 8.0) * 2.0, SENTINEL_Y, SENTINEL_W, SENTINEL_H),
@@ -1957,29 +2098,6 @@ func _fit_caption(font: Font, text: String, limit: float, base: int) -> int:
 	return size_px
 
 
-# The caption is FITTED, never clipped. draw_string's width just cuts the glyphs
-# off at the edge, so a goal one word too long ends mid-word and the reader
-# cannot tell whether they are seeing all of it - and the Game tab, which sizes
-# this overlay, gets narrower the more docks the user opens. The size steps down
-# until the string fits; only a goal too long even at CAPTION_FONT_MIN is
-# trimmed, and then with an ellipsis, which SAYS there is more.
-func _draw_caption(font: Font, y: float, limit: float, text: String, color: Color) -> void:
-	var width := limit - OVERLAY_PAD
-	var size := CAPTION_FONT_SIZE
-	while (
-		size > CAPTION_FONT_MIN
-		and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width
-	):
-		size -= 2
-	var line := TextLine.new()
-	line.add_string(text, font, size)
-	line.width = width
-	line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	# TextLine draws from the top of its line box; draw_string drew from the
-	# baseline, and every caption's y is a baseline.
-	line.draw(_overlay_draw.get_canvas_item(), Vector2(OVERLAY_PAD, y - line.get_line_ascent()), color)
-
-
 func _input_line(cursor: Vector2) -> String:
 	var held := "nothing held" if _held.is_empty() else ", ".join(PackedStringArray(_held.keys()))
 	return "game receives: %s | pointer %d,%d" % [held, int(cursor.x), int(cursor.y)]
@@ -2000,9 +2118,7 @@ func _input_line(cursor: Vector2) -> String:
 #
 # With `wait_active` (the act carries an `until`), a pressable input does not
 # hold-and-release here at all: it stays DOWN for the whole wait and _op_act
-# lifts it when the wait resolves. The old shape - release at hold_frames, then
-# keep waiting - left the wait watching a game nobody was driving, which is why
-# 0 of 13 historical travel attempts ever arrived.
+# lifts it when the wait resolves.
 func _deliver(entry: Dictionary, wait_active: bool) -> Dictionary:
 	var label := _label(entry)
 	var kind := String(entry.get("type", "action"))
@@ -2272,9 +2388,7 @@ func _dispatch_servo(entry: Dictionary, label: String) -> Dictionary:
 		# An EDGELESS channel (relative mouse motion - a captured first-person
 		# camera reads nothing else) has no held state to bang-bang: a pulse
 		# EMITS one scaled delta instead, and the closed loop absorbs the game's
-		# unknown sensitivity. Measured before this mode existed: a servo aimed
-		# at a mouse-look yaw could not deliver at all - the single reason 3D
-		# navigation failed where a keyboard-turned camera succeeded.
+		# unknown sensitivity.
 		var side: Dictionary = (entry["increase"] if error > 0.0 else entry["decrease"]) as Dictionary
 		if held.is_empty() and String(side.get("type", "action")) == "motion":
 			if absf(error) <= tolerance:

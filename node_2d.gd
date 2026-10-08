@@ -52,6 +52,12 @@ var _road_drag_active: bool = false
 ## used to gap-fill a straight line toward the cursor's current cell.
 var _last_drag_cell: Vector2i = Vector2i(-1, -1)
 
+## True while the player holds the left button in SLUDGE build mode to drag-build
+## a continuous pipe stroke.
+var _sludge_drag_active: bool = false
+## Grid cell where the current sludge-drag stroke last passed.
+var _last_sludge_drag_cell: Vector2i = Vector2i(-1, -1)
+
 ## The Sprite2D used for the mouse-hover highlight indicator.
 var _hover_sprite: Sprite2D = Sprite2D.new()
 
@@ -178,6 +184,7 @@ func _ready() -> void:
 	_pipe_network = _create_pipe_network_manager()
 	_economy.pipe_network = _pipe_network
 	_pipe_network.network_changed.connect(_on_pipe_network_changed)
+	_pipe_network.capacity_updated.connect(_on_pipe_capacity_updated)
 
 	# Placement controller — single owner of the player build pipeline
 	# (cost lookup, placement rules, money deduction, grid and sprite writes).
@@ -190,7 +197,7 @@ func _ready() -> void:
 	_placement_controller.pipe_network = _pipe_network
 	_placement_controller.grid_size = GRID_SIZE
 	add_child(_placement_controller)
-	# Demolishing a public park triggers a global industrial strike.
+	# Demolishing a public park strikes the nearest factory for three minutes.
 	_placement_controller.park_demolished.connect(_economy.trigger_industrial_strike)
 
 	# Set up the hover-highlight sprite (a yellow diamond outline).
@@ -374,6 +381,10 @@ func _process(_delta: float) -> void:
 	if _road_drag_active:
 		_process_road_drag(cell)
 
+	# Sludge drag-build uses the same Bresenham gap-filling as road construction.
+	if _sludge_drag_active:
+		_process_sludge_drag(cell)
+
 
 ## Extends the road-drag stroke from the last placed cell to `target`, placing
 ## a ROAD tile on every cell along the straight line between them. Blocked or
@@ -396,6 +407,28 @@ func _process_road_drag(target: Vector2i) -> void:
 			break
 		# Any other failure (occupied, speculator-owned, …) is skipped silently.
 	_last_drag_cell = target
+	update_money_ui()
+	_update_resource_ui()
+	_update_objectives()
+
+
+## Extends a sludge-drag stroke from the last cell to `target`, placing a pipe on
+## every available cell along the Bresenham path. PlacementController handles
+## pipe-network invalidation; network_changed refreshes live/dead pipe visuals.
+func _process_sludge_drag(target: Vector2i) -> void:
+	if target == _last_sludge_drag_cell:
+		return
+	var path: Array[Vector2i] = _line_between(_last_sludge_drag_cell, target)
+	for i in range(1, path.size()):
+		var step: Vector2i = path[i]
+		var result: Dictionary = _placement_controller.attempt_build(
+				GridCellData.TileType.SLUDGE, step, current_money)
+		if result.ok:
+			current_money = result.money
+			refresh_road_connections(step)
+		elif result.reason == "Not enough money!":
+			break
+	_last_sludge_drag_cell = target
 	update_money_ui()
 	_update_resource_ui()
 	_update_objectives()
@@ -433,10 +466,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if is_game_over:
 		return
 
-	# Releasing the left button ends any in-progress road-drag stroke.
+	# Releasing the left button ends any in-progress road or sludge drag stroke.
 	if event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		_road_drag_active = false
 		_last_drag_cell = Vector2i(-1, -1)
+		_sludge_drag_active = false
+		_last_sludge_drag_cell = Vector2i(-1, -1)
 		return
 
 	# Hotkeys: 5 = Park, 6 = Sludge (activates the matching UI toggle).
@@ -478,14 +513,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		prints("Hostile buyout of speculator land at", grid_pos)
 		return
 
-	# Begin a road-drag stroke on this press: the tile at the click is placed by
-	# the build below, and the anchor is recorded so _process can extend the
-	# stroke while the mouse is held. Only ROAD mode drags; all other tools stay
-	# single-click. Blocked clicks still arm the anchor so a stroke can begin
-	# from the cursor's position even over an occupied cell.
+	# Begin a drag stroke on this press; the clicked tile is placed below and
+	# _process gap-fills the path while the mouse remains held.
 	if current_build_mode == GridCellData.TileType.ROAD:
 		_road_drag_active = true
 		_last_drag_cell = grid_pos
+	elif current_build_mode == GridCellData.TileType.SLUDGE:
+		_sludge_drag_active = true
+		_last_sludge_drag_cell = grid_pos
 
 	# Delegate the whole build pipeline (cost lookup, placement rules, money
 	# deduction, grid writes, sprite spawning) to the placement controller.
@@ -758,19 +793,46 @@ func _on_supply_chain_tick() -> void:
 	available_workers = worker_capacity
 	operating_factories = 0
 	_economy.staffed_factories.clear()
+	_pipe_network.reset_capacity_usage()
 	var produced: int = 0
+	var hooked_factory_outputs: Array[Dictionary] = []
 	for pos in _grid.get_all_occupied_positions():
 		if _grid.get_tile_type(pos) != GridCellData.TileType.INDUSTRIAL:
 			continue
 		if not _road_connected.get(pos, false):
 			continue
+		if _economy.is_factory_on_strike(pos):
+			continue
 		if available_workers >= WORKERS_PER_FACTORY:
 			available_workers -= WORKERS_PER_FACTORY
 			operating_factories += 1
 			_economy.staffed_factories[pos] = true
-			# Pipe hookup scales output; roundi() keeps the effect visible at low yields.
+			# Pipe hookup scales output; hooked output is capacity-limited per network.
 			var pipe_mult: float = _economy.factory_pipe_multiplier(pos)
-			produced += roundi(GOODS_PER_FACTORY_TICK * pipe_mult)
+			var requested_output: int = roundi(GOODS_PER_FACTORY_TICK * pipe_mult)
+			var component_id: int = _pipe_network.get_factory_network_id(pos)
+			if component_id >= 0:
+				hooked_factory_outputs.append({
+					"component_id": component_id,
+					"requested": requested_output
+				})
+			else:
+				# Unhooked factories retain their existing reduced-output behavior.
+				produced += requested_output
+
+	# Allocate each connected network's capacity once per tick. Deterministic
+	# factory iteration means the same earlier factories are served first.
+	var remaining_by_network: Dictionary = {}
+	for factory_output: Dictionary in hooked_factory_outputs:
+		var component_id: int = int(factory_output["component_id"])
+		var requested: int = int(factory_output["requested"])
+		var capacity: int = _pipe_network.get_network_capacity(component_id)
+		var remaining: int = int(remaining_by_network.get(component_id, capacity))
+		var delivered: int = mini(requested, remaining)
+		remaining_by_network[component_id] = remaining - delivered
+		produced += delivered
+		_pipe_network.record_network_flow(component_id, requested, delivered)
+	_pipe_network.finish_capacity_tick()
 	goods_stock += produced
 
 	# 3) Residences consume goods in grid order; fed residences receive a direct
@@ -995,7 +1057,14 @@ func _resolve_tutorial() -> void:
 ## factory is placed/removed). Live border-connected segments render normally;
 ## disconnected ones are dimmed via BuildingPlacement.
 func _on_pipe_network_changed() -> void:
-	_placement.update_pipe_visuals(_pipe_network.get_live_pipe_cells())
+	_placement.update_pipe_visuals(
+			_pipe_network.get_live_pipe_cells(),
+			_pipe_network.get_bottleneck_pipe_cells())
+
+
+## Refreshes pipe warning tints and factory status after a supply tick reallocates flow.
+func _on_pipe_capacity_updated() -> void:
+	_placement.update_pipe_capacity_visuals(_pipe_network.get_bottleneck_pipe_cells())
 
 
 ## Builds the hover readout that shows a factory's pipe connectivity status.

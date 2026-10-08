@@ -61,8 +61,7 @@ const POLLUTION_LV_MULTIPLIER: float = 0.2
 ## than this pays 2x LVT per tick (5 minutes).
 const HOARDING_TIME_LIMIT_MSEC: int = 300000
 
-## Duration of a global industrial strike (3 minutes) triggered by demolishing
-## a public park. Factories produce $0 while one is active.
+## Duration of a local factory strike (3 minutes) triggered by demolishing a park.
 const STRIKE_DURATION_MSEC: int = 180000
 
 ## Logistics bonuses — factories hooked into a live pipe network (SLUDGE line
@@ -100,9 +99,8 @@ var tile_build_times: Dictionary = {}
 ## land-hoarding tax targets. Built tiles are naturally excluded from the check.
 var tile_claimed_times: Dictionary = {}
 
-## Absolute tick (Time.get_ticks_msec()) until which a global industrial strike
-## is active. Factories earn $0 while Time.get_ticks_msec() < this. 0 = no strike.
-var industrial_strike_until_msec: int = 0
+## Factory grid positions mapped to their strike expiry (Time.get_ticks_msec()).
+var factory_strike_until_msec: Dictionary = {}
 
 ## Citizen's Dividend Policy (0–100 %). Higher payout boosts factory production
 ## but deducts a matching dividend cost from the treasury each assessment.
@@ -154,11 +152,34 @@ func _on_timer_timeout() -> void:
 #   Public API
 # ---------------------------------------------------------------------------
 
-## Starts a global industrial strike for STRIKE_DURATION_MSEC. While active,
-## factories produce no income. Called when the player demolishes a public park.
-func trigger_industrial_strike() -> void:
-	industrial_strike_until_msec = Time.get_ticks_msec() + STRIKE_DURATION_MSEC
-	prints("Industrial strike triggered for %d ms." % STRIKE_DURATION_MSEC)
+## Starts a STRIKE_DURATION_MSEC strike at the factory nearest to `park_pos`.
+## The root scene checks this state when simulating factory goods production.
+## If no factory exists, the demolished park causes no strike.
+func trigger_industrial_strike(park_pos: Vector2i) -> void:
+	var nearest_factory: Vector2i = Vector2i(-1, -1)
+	var nearest_distance: int = 2147483647
+	for pos in grid.get_all_occupied_positions():
+		if grid.get_tile_type(pos) != GridCellData.TileType.INDUSTRIAL:
+			continue
+		var distance: int = absi(pos.x - park_pos.x) + absi(pos.y - park_pos.y)
+		if distance < nearest_distance:
+			nearest_distance = distance
+			nearest_factory = pos
+	if nearest_factory == Vector2i(-1, -1):
+		prints("Park demolished at", park_pos, "but no factory was available to strike.")
+		return
+	factory_strike_until_msec[nearest_factory] = Time.get_ticks_msec() + STRIKE_DURATION_MSEC
+	prints("Factory at", nearest_factory, "struck for %d ms." % STRIKE_DURATION_MSEC)
+
+
+## True while the factory at `factory_pos` is serving its strike duration.
+func is_factory_on_strike(factory_pos: Vector2i) -> bool:
+	if not factory_strike_until_msec.has(factory_pos):
+		return false
+	if Time.get_ticks_msec() >= int(factory_strike_until_msec[factory_pos]):
+		factory_strike_until_msec.erase(factory_pos)
+		return false
+	return true
 
 
 ## Sets the Citizen's Dividend payout percentage (0–100). Driven live by the UI
@@ -209,8 +230,7 @@ func calculate_net_income() -> void:
 			GridCellData.TileType.INDUSTRIAL:
 				# Both goods production and factory income use the latest shared
 				# staffing decision from the supply-chain simulation.
-				if staffed_factories.has(pos) \
-						and Time.get_ticks_msec() >= industrial_strike_until_msec:
+				if staffed_factories.has(pos) and not is_factory_on_strike(pos):
 					var base_factory: int = get_land_value(pos)
 					factory_income += base_factory
 					# Logistics (pipe hookup) + Dividend Policy production modifiers.
@@ -359,14 +379,22 @@ func factory_pipe_multiplier(factory_pos: Vector2i) -> float:
 	return _factory_pipe_multiplier(factory_pos)
 
 
-## Human-readable pipe-connectivity status for a factory, for the hover/inspect
-## UI. Mirrors factory_pipe_multiplier() so the readout always matches the math.
+## Human-readable pipe status for the factory hover panel, including the live
+## network's delivered throughput and a bottleneck warning when fully utilized.
 func factory_pipe_status(factory_pos: Vector2i) -> String:
 	if pipe_network == null:
 		return "Pipe Status: No Network (Base Production)"
-	if pipe_network.is_factory_hooked_up(factory_pos):
-		return "Pipe Status: Connected (+%d%% Goods)" % int((HOOKED_FACTORY_MULTIPLIER - 1.0) * 100.0)
-	return "Pipe Status: Missing (-%d%% Penalty)" % int((1.0 - UNHOOKED_FACTORY_MULTIPLIER) * 100.0)
+	if not pipe_network.is_factory_hooked_up(factory_pos):
+		return "Pipe Status: Missing (-%d%% Penalty)" % int((1.0 - UNHOOKED_FACTORY_MULTIPLIER) * 100.0)
+	var stats: Dictionary = pipe_network.get_factory_network_stats(factory_pos)
+	var status: String = "Pipe Status: Connected (+%d%% Goods)" \
+			% int((HOOKED_FACTORY_MULTIPLIER - 1.0) * 100.0)
+	var utilization_text: String = "Flow: %d/%d | Demand: %d" % [
+		int(stats["delivered"]), int(stats["capacity"]), int(stats["demand"])
+	]
+	if bool(stats["bottleneck"]):
+		utilization_text += " — BOTTLENECK"
+	return status + "\n" + utilization_text
 
 
 ## Spekulationsspärren: sums 2x LVT for every claimed tile left unbuilt longer

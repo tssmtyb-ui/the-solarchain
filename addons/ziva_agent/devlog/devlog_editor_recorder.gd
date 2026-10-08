@@ -95,12 +95,15 @@ func _on_post_draw() -> void:
 	_in_flight += 1
 	if rd:
 		rd.texture_get_data_async(RenderingServer.texture_get_rd_texture(tex.get_rid()), 0,
-			func(data: PackedByteArray) -> void: _task_id = WorkerThreadPool.add_task(_encode.bind(data, size, stamp, dir)))
+			_on_still_read.bind(size, stamp, dir))
 	else:
 		# The Compatibility renderer has no async readback; one still a second keeps the stall rare.
 		var img := tex.get_image()
 		img.convert(Image.FORMAT_RGBA8)
 		_task_id = WorkerThreadPool.add_task(_encode.bind(img.get_data(), size, stamp, dir))
+
+func _on_still_read(data: PackedByteArray, size: Vector2i, stamp: float, dir: String) -> void:
+	_task_id = WorkerThreadPool.add_task(_encode.bind(data, size, stamp, dir))
 
 func _encode(data: PackedByteArray, size: Vector2i, stamp: float, dir: String) -> void:
 	# A runtime error ends only _save_still, so the capture slot is always freed.

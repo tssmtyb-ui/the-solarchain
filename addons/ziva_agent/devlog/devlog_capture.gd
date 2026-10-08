@@ -117,7 +117,7 @@ func _on_post_draw() -> void:
 	var tex := get_viewport().get_texture()
 	if _async:
 		RenderingServer.get_rendering_device().texture_get_data_async(RenderingServer.texture_get_rd_texture(tex.get_rid()), 0,
-			func(data: PackedByteArray) -> void: _enqueue(data, ticks))
+			_enqueue.bind(ticks))
 	else:
 		var img := tex.get_image()
 		img.convert(Image.FORMAT_RGBA8)
