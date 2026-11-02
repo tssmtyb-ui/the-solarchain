@@ -1,5 +1,7 @@
 Spekulant: Project Design Document & Contributor Guide
 
+If you want to play the game: https://ifthen-assembly.itch.io/spekulant
+
 Welcome to spekulant! We are building the ultimate eco-capitalist sandbox. Spekulant is an open-source 2.5D city builder that trades tedious traffic management for high-stakes macroeconomic puzzles. If you love the intricate supply chains of Anno and the progressive economics of Henry George, you are in the right place.
 Whether you are a developer, an artist, an economic theorist, or a player who loves supply chains, we want your help to make this sandbox a reality.
 1. The Core Pillars
