@@ -18,6 +18,13 @@ extends Node
 #   Internal storage
 # ---------------------------------------------------------------------------
 
+## Emitted whenever a tile is stored, removed, or the grid is cleared.
+signal grid_changed
+## Emitted after a tile has been stored or removed at the specified position.
+signal tile_changed(grid_pos: Vector2i)
+## Emitted after a full clear so derived caches can be discarded.
+signal grid_cleared
+
 ## Dictionary of Vector2i → GridCellData. Only stores non-empty tiles to save memory.
 var _grid: Dictionary = {}
 
@@ -30,8 +37,12 @@ var _grid: Dictionary = {}
 func set_tile(grid_pos: Vector2i, data: GridCellData) -> void:
 	if data == null:
 		_grid.erase(grid_pos)
+		grid_changed.emit()
+		tile_changed.emit(grid_pos)
 		return
 	_grid[grid_pos] = data
+	grid_changed.emit()
+	tile_changed.emit(grid_pos)
 
 
 ## Retrieve the GridCellData at a grid position, or null if the tile is empty.
@@ -69,3 +80,5 @@ func get_all_occupied_positions() -> Array[Vector2i]:
 ## Clears the entire grid.
 func clear_all() -> void:
 	_grid.clear()
+	grid_changed.emit()
+	grid_cleared.emit()

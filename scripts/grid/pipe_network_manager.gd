@@ -55,21 +55,39 @@ func mark_dirty() -> void:
 	network_changed.emit()
 
 
-## Returns the live network ID adjacent to a factory, or -1 if it is unhooked.
-## If a factory touches multiple networks, CARDINAL order deterministically picks
-## the first one; the factory does not merge those networks.
-func get_factory_network_id(factory_pos: Vector2i) -> int:
+## Returns the live network ID adjacent to a cell, or -1 if it is unhooked.
+## If a cell touches multiple networks, CARDINAL order deterministically picks
+## the first one; the building does not merge those networks.
+func get_adjacent_network_id(grid_pos: Vector2i) -> int:
 	_ensure_fresh()
 	for off in CARDINAL:
-		var adjacent: Vector2i = factory_pos + off
+		var adjacent: Vector2i = grid_pos + off
 		if _component_by_cell.has(adjacent):
 			return int(_component_by_cell[adjacent])
 	return -1
 
 
+## True if the cell touches a live pipe network reaching the map edge.
+func is_cell_hooked_up(grid_pos: Vector2i) -> bool:
+	return get_adjacent_network_id(grid_pos) >= 0
+
+
+## True if `grid_pos` itself is a live pipe segment connected to the map border.
+func is_live_pipe_cell(grid_pos: Vector2i) -> bool:
+	_ensure_fresh()
+	return _live_pipe_cells.has(grid_pos)
+
+
+## Returns the live network ID adjacent to a factory, or -1 if it is unhooked.
+## If a factory touches multiple networks, CARDINAL order deterministically picks
+## the first one; the factory does not merge those networks.
+func get_factory_network_id(factory_pos: Vector2i) -> int:
+	return get_adjacent_network_id(factory_pos)
+
+
 ## True if the factory touches a live pipe network reaching the map edge.
 func is_factory_hooked_up(factory_pos: Vector2i) -> bool:
-	return get_factory_network_id(factory_pos) >= 0
+	return is_cell_hooked_up(factory_pos)
 
 
 ## Capacity for a cached network, or 0 if the ID is no longer present.

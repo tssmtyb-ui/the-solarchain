@@ -1,2 +1,4 @@
-res://assets/spekulant_tileset.tres::5907bf69fb29a584caff88fa5b68969d::1787814757::res://.godot/exported/133200997/export-1b430cb6dec12020737524a8e138dcec-spekulant_tileset.res
-res://node_2d.tscn::cb9a3c4086e6133038b4e11858ed0008::1787814757::res://.godot/exported/133200997/export-362256a061aa8890e9a1e558b11e5ec3-node_2d.scn
+res://assets/spekulant_tileset.tres::5907bf69fb29a584caff88fa5b68969d::1792577429::res://.godot/exported/133200997/export-1b430cb6dec12020737524a8e138dcec-spekulant_tileset.res
+res://node_2d.tscn::9e3700b8e42f1eaae88313c587d4e717::1792577429::res://.godot/exported/133200997/export-362256a061aa8890e9a1e558b11e5ec3-node_2d.scn
+res://scenes/ui/settings_menu.tscn::d9dac16399dfce03718bf039026a8c68::1791490470::res://.godot/exported/133200997/export-e93d9b6685b8480853542440c05c4b8a-settings_menu.scn
+res://scenes/main_menu.tscn::2ddc72b188cdb58dc78bd4556d69fd8c::1791730594::res://.godot/exported/133200997/export-ea5c6ad4629af728dc514cefde332394-main_menu.scn

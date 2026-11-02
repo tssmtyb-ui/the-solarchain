@@ -13,6 +13,11 @@ const APARTMENT_A: Texture2D = preload("res://assets/Apartment/buildingTallOrang
 const APARTMENT_B: Texture2D = preload("res://assets/Apartment/buildingTallOrangeB.png")
 const GAZEBO: Texture2D = preload("res://assets/Park/gazebo.png")
 const SLUDGE_PIPE: Texture2D = preload("res://assets/generated/sludge_pipe.png")
+const FARMHOUSE: Texture2D = preload("res://assets/Farm/Farmhouse.png")
+const WHEAT_FIELD: Texture2D = preload("res://assets/Farm/Wheat.png")
+const WHEAT_FARMLAND: Texture2D = preload("res://assets/Farm/Wheat.png")
+const WATER_TOWER_SMALL: Texture2D = preload("res://watertower/waterTowerA.png")
+const WATER_TOWER_LARGE: Texture2D = preload("res://watertower/waterTowerB.png")
 
 ## Reference to the TileMapLayer — set by the root scene after creation.
 var tilemap: TileMapLayer
@@ -26,6 +31,8 @@ const PIPE_LIVE_MODULATE: Color = Color(1, 1, 1, 1)
 const PIPE_DEAD_MODULATE: Color = Color(0.5, 0.5, 0.5, 0.7)
 ## Warm warning tint for a live network operating at or above its capacity.
 const PIPE_BOTTLENECK_MODULATE: Color = Color(1.0, 0.32, 0.16, 1.0)
+## Desaturated dim tint for abandoned residences.
+const ABANDONED_MODULATE: Color = Color(0.42, 0.42, 0.45, 0.85)
 
 ## Live pipe cells from the last PipeNetworkManager refresh (Vector2i → true).
 var _live_pipe_cells: Dictionary = {}
@@ -60,10 +67,23 @@ func spawn_building(cell: Vector2i, tile_type: int) -> void:
 	sprite.z_index = 0
 	sprite.y_sort_enabled = true
 
-	# Scale so the building fills ~75 % of the 512 px diamond width.
+	# Farm textures are source illustrations rather than cell-scale sprites.
+	# Fit their opaque image into the same tile footprint as the existing buildings.
 	var tex_size: Vector2 = tex.get_size()
 	var target_width: float = 384.0
-	var s: float = target_width / tex_size.x
+	var target_height: float = 384.0
+	if tile_type == GridCellData.TileType.FARMHOUSE:
+		target_height = 480.0
+	elif tile_type == GridCellData.TileType.FARMLAND:
+		target_width = 512.0
+		target_height = 300.0
+	elif tile_type == GridCellData.TileType.WATER_TOWER_SMALL:
+		target_width = 360.0
+		target_height = 420.0
+	elif tile_type == GridCellData.TileType.WATER_TOWER_LARGE:
+		target_width = 384.0
+		target_height = 460.0
+	var s: float = minf(target_width / tex_size.x, target_height / tex_size.y)
 	sprite.scale = Vector2(s, s)
 
 	# Position at diamond centre; offset so the bottom edge sits on the ground plane.
@@ -79,6 +99,8 @@ func spawn_building(cell: Vector2i, tile_type: int) -> void:
 	# freshly placed SLUDGE line that isn't border-connected shows dimmed.
 	if tile_type == GridCellData.TileType.SLUDGE:
 		_tint_pipe(cell)
+	elif tile_type == GridCellData.TileType.ABANDONED:
+		sprite.modulate = ABANDONED_MODULATE
 
 
 ## Removes the building sprite at the given cell, if one exists.
@@ -88,6 +110,13 @@ func remove_building(cell: Vector2i) -> void:
 		if is_instance_valid(sprite):
 			sprite.queue_free()
 		_sprites.erase(cell)
+
+
+## Removes every tracked sprite before a complete map restore.
+func clear_buildings() -> void:
+	for cell: Vector2i in _sprites.keys():
+		remove_building(cell)
+	_sprites.clear()
 
 
 ## Returns true if a building sprite exists at the given cell.
@@ -151,4 +180,14 @@ func _texture_for_type(tile_type: int) -> Texture2D:
 			return GAZEBO
 		GridCellData.TileType.SLUDGE:
 			return SLUDGE_PIPE
+		GridCellData.TileType.FARMHOUSE:
+			return FARMHOUSE
+		GridCellData.TileType.FARMLAND:
+			return WHEAT_FARMLAND
+		GridCellData.TileType.ABANDONED:
+			return HOUSE_A
+		GridCellData.TileType.WATER_TOWER_SMALL:
+			return WATER_TOWER_SMALL
+		GridCellData.TileType.WATER_TOWER_LARGE:
+			return WATER_TOWER_LARGE
 	return null

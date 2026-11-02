@@ -19,10 +19,19 @@ const CREDITS: Array[Dictionary] = [
 ]
 
 ## Portrait of the game mascot, shown beside the attribution text.
-const MASCOT_TEXTURE_PATH := "res://Mascot/bobr the speculator.png"
+const MASCOT_TEXTURE_PATH := "res://Mascot/Gemini_Generated_Image_mjph2dmjph2dmjph(1)(1).png"
+
+signal closed
 
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.055, 0.065, 0.085, 1.0)
+	panel_style.border_color = Color(0.87, 0.73, 0.35, 0.9)
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(12)
+	add_theme_stylebox_override("panel", panel_style)
 	hide()
 	_build_content()
 	var button := get_node_or_null(CREDITS_BUTTON_PATH) as Button
@@ -32,7 +41,10 @@ func _ready() -> void:
 
 ## Flips the panel between open and closed.
 func toggle() -> void:
-	visible = not visible
+	if visible:
+		close()
+	else:
+		open()
 
 
 ## Opens the credits panel.
@@ -42,7 +54,17 @@ func open() -> void:
 
 ## Closes the credits panel.
 func close() -> void:
+	if not visible:
+		return
 	hide()
+	closed.emit()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not visible or event.is_echo() or not event.is_action_pressed("ui_cancel"):
+		return
+	close()
+	get_viewport().set_input_as_handled()
 
 
 ## Builds the panel's contents: framed mascot portrait on the left, with the

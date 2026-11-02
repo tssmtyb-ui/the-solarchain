@@ -1,7 +1,6 @@
 [gd_resource type="TileSet" format=3 uid="uid://smak4k6kjp7y"]
 
 [ext_resource type="Texture2D" uid="uid://dlk0nq3pvn1ym" path="res://assets/tileGroundGrass.png" id="1_fhvgs"]
-[ext_resource type="Texture2D" uid="uid://bptulrcgd1wh6" path="res://assets/tileGroundDirt.png" id="2_a328f"]
 [ext_resource type="Texture2D" uid="uid://vlj514jtlnju" path="res://assets/road06.png" id="3_ljbqx"]
 [ext_resource type="Texture2D" uid="uid://diwjwi4gtti6e" path="res://assets/sidewalkA.png" id="4_beehj"]
 [ext_resource type="Texture2D" uid="uid://b7pwiojq1sxx" path="res://assets/tileGroundConcrete.png" id="12_ujgnf"]
@@ -15,11 +14,6 @@
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_grass"]
 texture = ExtResource("1_fhvgs")
-texture_region_size = Vector2i(512, 256)
-0:0/0 = 0
-
-[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_dirt"]
-texture = ExtResource("2_a328f")
 texture_region_size = Vector2i(512, 256)
 0:0/0 = 0
 
@@ -78,7 +72,6 @@ tile_shape = 1
 tile_layout = 4
 tile_size = Vector2i(512, 256)
 sources/0 = SubResource("TileSetAtlasSource_grass")
-sources/1 = SubResource("TileSetAtlasSource_dirt")
 sources/2 = SubResource("TileSetAtlasSource_concrete")
 sources/3 = SubResource("TileSetAtlasSource_asphalt")
 sources/4 = SubResource("TileSetAtlasSource_water")

@@ -5,7 +5,7 @@ extends RefCounted
 ## (Credits now live in the toggleable CreditsPanel popup instead.)
 
 ## Portrait of the game mascot shown on the game-over screen.
-const MASCOT_TEXTURE_PATH := "res://Mascot/bobr the speculator.png"
+const MASCOT_TEXTURE_PATH := "res://Mascot/Gemini_Generated_Image_mjph2dmjph2dmjph(1)(1).png"
 
 ## Clever Georgist/speculation one-liner shown to a bankrupt player.
 const BANKRUPTCY_QUOTE := "Turns out holding out for land value appreciation doesn\u2019t pay... or rather, it cost you everything!"

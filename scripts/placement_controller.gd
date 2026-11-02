@@ -1,24 +1,12 @@
 class_name PlacementController
 extends Node
-## Owns the player-build pipeline: cost lookup, placement rules, money
-## deduction, grid writes, and sprite spawning — extracted from the root
-## scene script (node_2d.gd) to stop it from becoming a God Object.
-##
-## Pure function API: `attempt_build()` / `attempt_bulldoze()` take the
-## player's current money IN and return the NEW balance OUT, so the caller
-## (root scene) stays the single owner of `current_money` and the money UI.
-##
-## Dependencies are injected by the root scene before use:
-##   grid      (GridManager)        — data model reads/writes
-##   tilemap   (TileMapLayer)       — ground tile rendering
-##   placement (BuildingPlacement)  — building sprite spawning
-##   speculator(SpeculatorManager)  — land-ownership check (can be null)
+## Owns the player-build pipeline: costs, placement rules, money deduction,
+## grid writes, and building sprite spawning.
 
-# ---------------------------------------------------------------------------
-#   Build costs
-# ---------------------------------------------------------------------------
+## Preloaded water ground tile texture.
+const WATER_TILE_TEXTURE: Texture2D = preload("res://assets/tileGroundWater.png")
+const WATER_ATLAS_SOURCE_ID: int = 4
 
-## Monetary cost to build each tile type (deducted on success).
 const BUILD_COSTS: Dictionary = {
 	GridCellData.TileType.ROAD: 10,
 	GridCellData.TileType.INDUSTRIAL: 100,
@@ -26,15 +14,12 @@ const BUILD_COSTS: Dictionary = {
 	GridCellData.TileType.RESIDENTIAL_LOW: 50,
 	GridCellData.TileType.PARK: 50,
 	GridCellData.TileType.SLUDGE: 10,
+	GridCellData.TileType.FARMHOUSE: 140,
+	GridCellData.TileType.FARMLAND: 20,
+	GridCellData.TileType.WATER_TOWER_SMALL: 200,
+	GridCellData.TileType.WATER_TOWER_LARGE: 500,
 }
-
-## Cost to upgrade an existing villa (RESIDENTIAL_LOW) to an apartment.
 const UPGRADE_COST: int = 150
-
-## Massive premium the player pays to seize a speculator-owned DIRT_LOT back.
-const HOSTILE_BUYOUT_PREMIUM: int = 500
-
-## Tile types the bulldozer may demolish back to grass.
 const DEMOLISHABLE_TILES: Array[int] = [
 	GridCellData.TileType.ROAD,
 	GridCellData.TileType.ROAD_CROSS,
@@ -44,154 +29,88 @@ const DEMOLISHABLE_TILES: Array[int] = [
 	GridCellData.TileType.RESIDENTIAL_HIGH,
 	GridCellData.TileType.PARK,
 	GridCellData.TileType.SLUDGE,
+	GridCellData.TileType.FARMHOUSE,
+	GridCellData.TileType.FARMLAND,
+	GridCellData.TileType.ABANDONED,
+	GridCellData.TileType.WATER_TOWER_SMALL,
+	GridCellData.TileType.WATER_TOWER_LARGE,
 ]
-
-## Tile types rendered purely as ground atlas tiles (no sprite overlay).
-## Building sprites are skipped for these even when placed successfully.
 const ATLAS_ONLY_TILES: Array[int] = [
 	GridCellData.TileType.ROAD,
 	GridCellData.TileType.ROAD_CROSS,
 ]
-
-# ---------------------------------------------------------------------------
-#   Road auto-tiling
-# ---------------------------------------------------------------------------
-
-## Cardinal offsets, in N/E/S/W order — index i matches bit (1 << i).
 const CARDINAL_OFFSETS: Array[Vector2i] = [
-	Vector2i(0, -1),  # N
-	Vector2i(1, 0),   # E
-	Vector2i(0, 1),   # S
-	Vector2i(-1, 0),  # W
+	Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0),
 ]
-
-## Direction bits for the 4-bit road connection mask (N|E|S|W).
 const DIR_N: int = 1
 const DIR_E: int = 2
 const DIR_S: int = 4
 const DIR_W: int = 8
-
-## Maps a 4-bit road connection mask to the TileSet atlas source id of the road
-## texture to display for that cell. The masks are derived from the cell's road
-## neighbours, so a straight, corner, T-junction and intersection each get a
-## matching sprite. This table is the single place to edit when swapping in
-## distinct road art.
-##
-## NOTE: the bundled road01..06 assets are all full-diamond road surfaces
-## (asphalt reaches every edge), differing only in faint lane markings — so
-## every mask currently resolves to a visually similar tile. Replacing them with
-## true straight/corner/T/intersection pieces (and updating this table) is what
-## makes roads actually look like a connected network.
 const ROAD_SOURCE_BY_MASK: Dictionary = {
-	(DIR_W | DIR_E): 5,                   # ─ horizontal straight        (road01)
-	(DIR_N | DIR_S): 6,                   # │ vertical straight          (road02)
-	(DIR_N | DIR_E): 7,                   # ┘ corner                     (road03)
-	(DIR_E | DIR_S): 7,                   # └ corner                     (road03)
-	(DIR_S | DIR_W): 7,                   # ┌ corner                     (road03)
-	(DIR_W | DIR_N): 7,                   # ┐ corner                     (road03)
-	(DIR_N | DIR_E | DIR_S): 8,           # ┴ T-junction                 (road04)
-	(DIR_E | DIR_S | DIR_W): 8,           # ┤ T-junction                 (road04)
-	(DIR_S | DIR_W | DIR_N): 8,           # ┬ T-junction                 (road04)
-	(DIR_W | DIR_N | DIR_E): 8,           # ├ T-junction                 (road04)
-	(DIR_N | DIR_E | DIR_S | DIR_W): 9,   # ┼ 4-way intersection         (road05)
+	(DIR_W | DIR_E): 5,
+	(DIR_N | DIR_S): 6,
+	(DIR_N | DIR_E): 7,
+	(DIR_E | DIR_S): 7,
+	(DIR_S | DIR_W): 7,
+	(DIR_W | DIR_N): 7,
+	(DIR_N | DIR_E | DIR_S): 8,
+	(DIR_E | DIR_S | DIR_W): 8,
+	(DIR_S | DIR_W | DIR_N): 8,
+	(DIR_W | DIR_N | DIR_E): 8,
+	(DIR_N | DIR_E | DIR_S | DIR_W): 9,
 }
-## Isolated / dead-end fallback source (no mask match above → road06).
 const ROAD_SOURCE_FALLBACK: int = 10
 
-# ---------------------------------------------------------------------------
-#   Injected dependencies (set by the root scene before use)
-# ---------------------------------------------------------------------------
-
-## The GridManager data model.
 var grid: GridManager
-
-## The TileMapLayer used to paint ground tiles.
 var tilemap: TileMapLayer
-
-## The BuildingPlacement manager that spawns/removes building sprites.
 var placement: BuildingPlacement
-
-## The corporate speculator AI; may be null (ownership checks are skipped).
-var speculator: SpeculatorManager
-
-## Pipe/logistics connectivity graph; may be null. Told to invalidate its cache
-## whenever a pipe or factory tile is placed/removed so hookups stay correct.
 var pipe_network: PipeNetworkManager
+var road_connectivity: RoadConnectivityManager
+var speculator_manager: SpeculatorManager
+var farm_system: FarmSystem = FarmSystem.new()
+var grid_size: int = 30
+var _water_basin_cells: Dictionary = {}
 
-## Grid dimensions for bounds checks — mirrors the root scene's GRID_SIZE.
-var grid_size: int = 10
-
-# ---------------------------------------------------------------------------
-#   Ground atlas mapping
-# ---------------------------------------------------------------------------
-
-## Maps GridCellData.TileType → { source_id, atlas_coords } for TileSet lookup.
-## Each texture is a single 2048×1024 isometric tile at atlas origin (0,0).
-## This is the same map that lived on the root scene; the root copy is
-## deleted when node_2d.gd is migrated onto this controller.
 const TILE_TYPE_MAP: Dictionary = {
-	GridCellData.TileType.GRASS:      { "source_id": 0,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.DIRT:       { "source_id": 1,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.ASPHALT:    { "source_id": 3,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.WATER:      { "source_id": 4,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.ROAD:       { "source_id": 5,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.ROAD_CROSS: { "source_id": 6,  "coords": Vector2i(0, 0) },
-	GridCellData.TileType.SIDEWALK:   { "source_id": 11, "coords": Vector2i(0, 0) },
-	GridCellData.TileType.RESIDENTIAL_LOW: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
-	GridCellData.TileType.RESIDENTIAL_HIGH: { "source_id": 0, "coords": Vector2i(0, 0) }, # ground: grass; building sprite spawned separately
-	GridCellData.TileType.INDUSTRIAL:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
-	GridCellData.TileType.WAREHOUSE:  { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass blends in; building sprite spawned separately
-	GridCellData.TileType.PARK:       { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; gazebo spawned separately
-	GridCellData.TileType.SLUDGE:     { "source_id": 0,  "coords": Vector2i(0, 0) }, # ground: grass; pipe spawned separately
-	GridCellData.TileType.DIRT_LOT:   { "source_id": 1,  "coords": Vector2i(0, 0) }, # dirt lot — speculator-owned land
+	GridCellData.TileType.GRASS: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.DIRT: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.ASPHALT: {"source_id": 3, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.WATER: {"source_id": WATER_ATLAS_SOURCE_ID, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.ROAD: {"source_id": 5, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.ROAD_CROSS: {"source_id": 6, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.SIDEWALK: {"source_id": 11, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.RESIDENTIAL_LOW: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.RESIDENTIAL_HIGH: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.INDUSTRIAL: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.WAREHOUSE: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.PARK: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.SLUDGE: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.FARMHOUSE: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.FARMLAND: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.ABANDONED: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.WATER_TOWER_SMALL: {"source_id": 0, "coords": Vector2i(0, 0)},
+	GridCellData.TileType.WATER_TOWER_LARGE: {"source_id": 0, "coords": Vector2i(0, 0)},
 }
 
-# ---------------------------------------------------------------------------
-#   Signals
-# ---------------------------------------------------------------------------
-
-## Emitted with the grid position when a public PARK is demolished so the
-## economy can strike the nearest factory.
 signal park_demolished(park_pos: Vector2i)
 
-# ---------------------------------------------------------------------------
-#   Public API
-# ---------------------------------------------------------------------------
 
-## Attempts to build `tile_type` at `grid_pos`, spending from `current_money`.
-##
-## Handles, in order: bounds, speculator ownership, already-occupied no-op,
-## cost lookup, road-adjacency rules, villa→apartment upgrade, affordability,
-## then applies the build (deduct → grid write → ground tile → sprite).
-##
-## Returns a Dictionary:
-##   SUCCESS: { "ok": true, "money": <new balance>, "placed_type": <int> }
-##   FAILURE: { "ok": false, "money": <unchanged>, "reason": "<message>" }
-## A failure with `reason == ""` is a silent no-op (re-clicking an identical
-## tile) — the caller can choose not to surface it.
 func attempt_build(tile_type: int, grid_pos: Vector2i, current_money: int) -> Dictionary:
 	if not _within_bounds(grid_pos):
 		return _fail(current_money, "Out of bounds.")
 
-	# Speculator-owned land is off-limits to the player.
-	if speculator != null and speculator.owned_tiles.has(grid_pos):
-		return _fail(current_money, "Blocked: owned by the speculator!")
-
 	var existing: int = grid.get_tile_type(grid_pos)
-
-	# One object per tile. A build is only legal on empty ground, an identical
-	# tile re-click (silent no-op), or the intentional villa→apartment upgrade.
-	var is_buildable_ground: bool = (
-		existing == GridCellData.TileType.EMPTY
-		or existing == GridCellData.TileType.GRASS
-		or existing == GridCellData.TileType.DIRT
-	)
-	var is_villa_upgrade: bool = (
-		tile_type == GridCellData.TileType.RESIDENTIAL_LOW
-		and existing == GridCellData.TileType.RESIDENTIAL_LOW
-	)
-	if not is_buildable_ground and not is_villa_upgrade:
-		# Re-clicking the identical tile is a silent no-op (no error spam).
+	var is_water_tower: bool = _is_water_tower_type(tile_type)
+	if existing == GridCellData.TileType.WATER and not is_water_tower:
+		return _fail(current_money, "Cannot build on water!")
+	var is_buildable_ground: bool = existing == GridCellData.TileType.EMPTY \
+			or existing == GridCellData.TileType.GRASS \
+			or existing == GridCellData.TileType.DIRT
+	var is_villa_upgrade: bool = tile_type == GridCellData.TileType.RESIDENTIAL_LOW \
+			and existing == GridCellData.TileType.RESIDENTIAL_LOW
+	var is_water_tower_on_water: bool = is_water_tower \
+			and existing == GridCellData.TileType.WATER
+	if not is_buildable_ground and not is_villa_upgrade and not is_water_tower_on_water:
 		if existing == tile_type:
 			return _fail(current_money, "")
 		return _fail(current_money, "Tile already occupied! Bulldoze it first.")
@@ -199,198 +118,188 @@ func attempt_build(tile_type: int, grid_pos: Vector2i, current_money: int) -> Di
 	var cost: int = BUILD_COSTS.get(tile_type, -1)
 	if cost < 0:
 		return _fail(current_money, "Unbuildable tile type: %d" % tile_type)
-
-	# Factories and warehouses must sit next to a road.
-	if tile_type == GridCellData.TileType.INDUSTRIAL or tile_type == GridCellData.TileType.WAREHOUSE:
+	if is_water_tower:
+		if not is_water_tower_on_water and not _has_adjacent_water(grid_pos):
+			return _fail(
+				current_money,
+				"Water Tower must be placed on water or adjacent to water!")
 		if not _adjacent_to_road(grid_pos):
 			return _fail(current_money, "Must be built next to a road!")
+	elif tile_type == GridCellData.TileType.INDUSTRIAL \
+			or tile_type == GridCellData.TileType.WAREHOUSE \
+			or tile_type == GridCellData.TileType.FARMHOUSE:
+		if not _adjacent_to_road(grid_pos):
+			return _fail(current_money, "Must be built next to a road!")
+	if tile_type == GridCellData.TileType.FARMLAND \
+			and not farm_system.is_near_farmhouse(grid, grid_pos):
+		return _fail(current_money, "Farmland must be within 3 tiles of a Farmhouse!")
 
-	# Villa → apartment upgrade when re-clicking an existing house.
 	var placed_type: int = tile_type
-	if tile_type == GridCellData.TileType.RESIDENTIAL_LOW and existing == GridCellData.TileType.RESIDENTIAL_LOW:
+	if tile_type == GridCellData.TileType.RESIDENTIAL_LOW \
+			and existing == GridCellData.TileType.RESIDENTIAL_LOW:
 		placed_type = GridCellData.TileType.RESIDENTIAL_HIGH
 		cost = UPGRADE_COST
-
+	var is_speculator_lot: bool = (
+		speculator_manager != null
+		and speculator_manager.is_speculator_owned(grid_pos)
+	)
+	var eminent_domain_fee: int = (
+		speculator_manager.get_eminent_domain_cost(grid_pos)
+		if is_speculator_lot
+		else 0
+	)
+	cost += eminent_domain_fee
 	if current_money < cost:
 		return _fail(current_money, "Not enough money!")
 
+	if is_speculator_lot:
+		speculator_manager.release_lot(grid_pos, "eminent_domain")
+	if existing == GridCellData.TileType.WATER:
+		_water_basin_cells[grid_pos] = true
 	var new_money: int = current_money - cost
-
-	# Apply: data model → ground tile → building sprite.
 	grid.set_tile(grid_pos, GridCellData.new(placed_type))
 	place_tile(grid_pos, placed_type)
 	if placement != null and not ATLAS_ONLY_TILES.has(placed_type):
 		placement.spawn_building(grid_pos, placed_type)
-
-	# Roads auto-tile: repaint this cell AND its cardinal neighbours so every
-	# road in the network shows the correct connection sprite.
-	if placed_type == GridCellData.TileType.ROAD or placed_type == GridCellData.TileType.ROAD_CROSS:
+	if placed_type == GridCellData.TileType.ROAD \
+			or placed_type == GridCellData.TileType.ROAD_CROSS:
 		refresh_road_neighbors(grid_pos)
+	return {
+		"ok": true,
+		"money": new_money,
+		"placed_type": placed_type,
+		"eminent_domain_fee": eminent_domain_fee,
+	}
 
-	return { "ok": true, "money": new_money, "placed_type": placed_type }
 
-
-## Demolishes the tile at `grid_pos` back to grass (free). Respects the
-## speculator's ownership and the edge-highway connections — same result
-## contract as `attempt_build()`; `money` is returned unchanged.
 func attempt_bulldoze(grid_pos: Vector2i, current_money: int) -> Dictionary:
 	if not _within_bounds(grid_pos):
 		return _fail(current_money, "Out of bounds.")
-
-	if speculator != null and speculator.owned_tiles.has(grid_pos):
-		return _fail(current_money, "Blocked: owned by the speculator!")
-
 	if _edge_highways().has(grid_pos):
 		return _fail(current_money, "Cannot demolish edge highway connection.")
-
 	var existing: int = grid.get_tile_type(grid_pos)
+	if speculator_manager != null and speculator_manager.is_speculator_owned(grid_pos):
+		var fee: int = speculator_manager.get_eminent_domain_cost(grid_pos)
+		if current_money < fee:
+			return _fail(current_money, "Not enough money!")
+		speculator_manager.release_lot(grid_pos, "eminent_domain")
+		return {
+			"ok": true,
+			"money": current_money - fee,
+			"placed_type": existing,
+			"eminent_domain_fee": fee,
+		}
+	if existing == GridCellData.TileType.WATER:
+		return _fail(current_money, "Cannot demolish water.")
 	if not DEMOLISHABLE_TILES.has(existing):
 		return _fail(current_money, "Nothing to demolish.")
-
 	if placement != null:
 		placement.remove_building(grid_pos)
-	grid.set_tile(grid_pos, GridCellData.new(GridCellData.TileType.GRASS))
-	place_tile(grid_pos, GridCellData.TileType.GRASS)
-
-	# Demolishing a road removes its connections — repaint surviving neighbours.
-	if existing == GridCellData.TileType.ROAD or existing == GridCellData.TileType.ROAD_CROSS:
+	var restored_type: int = GridCellData.TileType.WATER \
+			if _water_basin_cells.has(grid_pos) \
+			else GridCellData.TileType.GRASS
+	grid.set_tile(grid_pos, GridCellData.new(restored_type))
+	place_tile(grid_pos, restored_type)
+	if existing == GridCellData.TileType.ROAD \
+			or existing == GridCellData.TileType.ROAD_CROSS:
 		refresh_road_neighbors(grid_pos)
-
-	# Removing a pipe/factory breaks the logistics network — invalidate its cache.
 	if pipe_network != null and _is_network_relevant(existing):
 		pipe_network.mark_dirty()
-
-	# Demolishing a public park provokes a local strike at the nearest factory.
 	if existing == GridCellData.TileType.PARK:
 		park_demolished.emit(grid_pos)
-
-	return { "ok": true, "money": current_money, "placed_type": GridCellData.TileType.GRASS }
-
-
-## Hostile buyout: the player spends HOSTILE_BUYOUT_PREMIUM to seize a
-## speculator-owned DIRT_LOT. Deducts the premium, forces the speculator to
-## sell the tile, and returns the tile as a blank GRASS lot (the caller paints
-## it). Same result contract as attempt_build()/attempt_bulldoze().
-##
-##   SUCCESS: { "ok": true, "money": <new balance>, "placed_type": GRASS }
-##   FAILURE: { "ok": false, "money": <unchanged>, "reason": "<message>" }
-func attempt_hostile_buyout(grid_pos: Vector2i, current_money: int) -> Dictionary:
-	if speculator == null:
-		return _fail(current_money, "No speculator in play.")
-
-	if not speculator.owned_tiles.has(grid_pos):
-		return _fail(current_money, "Not a speculator-owned tile.")
-
-	if current_money < HOSTILE_BUYOUT_PREMIUM:
-		return _fail(current_money, "Not enough money for a hostile buyout ($%d)!" % HOSTILE_BUYOUT_PREMIUM)
-
-	var new_money: int = current_money - HOSTILE_BUYOUT_PREMIUM
-	speculator.force_sell_tile(grid_pos)
-
-	return { "ok": true, "money": new_money, "placed_type": GridCellData.TileType.GRASS }
+	return {"ok": true, "money": current_money, "placed_type": restored_type}
 
 
-## Looks up the TileSet source/coords for a GridCellData tile type and paints
-## the ground tile on the TileMapLayer. Public so the root scene can reuse it
-## for non-player writes (edge highways, evolution swaps, speculator claims).
 func place_tile(cell: Vector2i, tile_type: int) -> void:
+	if tile_type == GridCellData.TileType.WATER:
+		_water_basin_cells[cell] = true
 	if tilemap == null:
 		return
 	var entry: Dictionary = TILE_TYPE_MAP.get(tile_type, {})
 	if entry.is_empty():
 		push_warning("No TileSet mapping for tile type ", tile_type)
 		return
-	tilemap.set_cell(cell, entry.source_id, entry.coords)
-
-	# A pipe or factory appearing here changes logistics connectivity.
+	var source_id: int = int(entry.source_id)
+	if _is_water_tower_type(tile_type) and _water_basin_cells.has(cell):
+		source_id = WATER_ATLAS_SOURCE_ID
+	tilemap.set_cell(cell, source_id, entry.coords)
 	if pipe_network != null and _is_network_relevant(tile_type):
 		pipe_network.mark_dirty()
 
-# ---------------------------------------------------------------------------
-#   Internal helpers
-# ---------------------------------------------------------------------------
 
-## Returns true if this tile type participates in the pipe/logistics network
-## (SLUDGE segments and INDUSTRIAL hookup points).
+func _is_water_tower_type(tile_type: int) -> bool:
+	return tile_type == GridCellData.TileType.WATER_TOWER_SMALL \
+			or tile_type == GridCellData.TileType.WATER_TOWER_LARGE
+
+
+func _is_water_cell(pos: Vector2i) -> bool:
+	if not _within_bounds(pos) or grid == null:
+		return false
+	return grid.get_tile_type(pos) == GridCellData.TileType.WATER \
+			or _water_basin_cells.has(pos)
+
+
+func _has_adjacent_water(grid_pos: Vector2i) -> bool:
+	for off: Vector2i in CARDINAL_OFFSETS:
+		if _is_water_cell(grid_pos + off):
+			return true
+	return false
+
+
 func _is_network_relevant(tile_type: int) -> bool:
 	return tile_type == GridCellData.TileType.SLUDGE \
 			or tile_type == GridCellData.TileType.INDUSTRIAL
 
 
-## Returns true if the cell at `off` from `cell` is a road tile. Out-of-bounds
-## neighbours are treated as not-road.
 func _road_connection(cell: Vector2i, off: Vector2i) -> bool:
 	var adj: Vector2i = cell + off
 	if not _within_bounds(adj):
 		return false
 	var adj_type: int = grid.get_tile_type(adj)
-	return adj_type == GridCellData.TileType.ROAD or adj_type == GridCellData.TileType.ROAD_CROSS
+	return adj_type == GridCellData.TileType.ROAD \
+			or adj_type == GridCellData.TileType.ROAD_CROSS
 
 
-## Computes the 4-bit connection mask (bits N,E,S,W) for a road at `cell` by
-## checking its cardinal neighbours.
 func _road_mask(cell: Vector2i) -> int:
-	var mask := 0
+	var mask: int = 0
 	if _road_connection(cell, Vector2i(0, -1)): mask |= DIR_N
-	if _road_connection(cell, Vector2i(1, 0)):  mask |= DIR_E
-	if _road_connection(cell, Vector2i(0, 1)):  mask |= DIR_S
+	if _road_connection(cell, Vector2i(1, 0)): mask |= DIR_E
+	if _road_connection(cell, Vector2i(0, 1)): mask |= DIR_S
 	if _road_connection(cell, Vector2i(-1, 0)): mask |= DIR_W
 	return mask
 
 
-## Repaints a single road cell with the correct auto-tiled texture for its
-## neighbours. This is the texture-switching function — it re-reads the cell's
-## connection mask and swaps the TileSet atlas source to the matching sprite.
-## No-op for non-road tiles and out-of-bounds cells.
 func refresh_road_connection(cell: Vector2i) -> void:
 	if tilemap == null or not _within_bounds(cell):
 		return
 	var tile_type: int = grid.get_tile_type(cell)
-	if tile_type != GridCellData.TileType.ROAD and tile_type != GridCellData.TileType.ROAD_CROSS:
+	if tile_type != GridCellData.TileType.ROAD \
+			and tile_type != GridCellData.TileType.ROAD_CROSS:
 		return
 	var mask: int = _road_mask(cell)
 	var source: int = ROAD_SOURCE_BY_MASK.get(mask, ROAD_SOURCE_FALLBACK)
 	tilemap.set_cell(cell, source, Vector2i.ZERO)
 
 
-## After a build or demolish at `cell`, refreshes the road texture for `cell`
-## AND every cardinal road neighbour so the whole network stays in sync —
-## placing a road next to an old road updates the old road's sprite too.
 func refresh_road_neighbors(cell: Vector2i) -> void:
 	refresh_road_connection(cell)
-	for off in CARDINAL_OFFSETS:
+	for off: Vector2i in CARDINAL_OFFSETS:
 		refresh_road_connection(cell + off)
 
 
-## Returns true if any cardinal neighbour of `grid_pos` is a road tile.
 func _adjacent_to_road(grid_pos: Vector2i) -> bool:
-	var cardinal: Array[Vector2i] = [
-		Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0),
-	]
-	for off in cardinal:
-		var adj: Vector2i = Vector2i(grid_pos.x + off.x, grid_pos.y + off.y)
-		if not _within_bounds(adj):
-			continue
-		var adj_type: int = grid.get_tile_type(adj)
-		if adj_type == GridCellData.TileType.ROAD or adj_type == GridCellData.TileType.ROAD_CROSS:
-			return true
-	return false
+	return road_connectivity != null \
+			and road_connectivity.is_road_adjacent(grid_pos)
 
 
-## Returns the protected edge-highway cells (west/east midpoints).
 func _edge_highways() -> Array[Vector2i]:
 	var mid_y: int = int(grid_size * 0.5)
-	return [
-		Vector2i(0, mid_y),
-		Vector2i(grid_size - 1, mid_y),
-	]
+	return [Vector2i(0, mid_y), Vector2i(grid_size - 1, mid_y)]
 
 
-## Returns true if `pos` lies within the grid_size × grid_size map bounds.
 func _within_bounds(pos: Vector2i) -> bool:
 	return pos.x >= 0 and pos.x < grid_size and pos.y >= 0 and pos.y < grid_size
 
 
-## Builds the standard failure result dictionary.
 func _fail(money: int, reason: String) -> Dictionary:
-	return { "ok": false, "money": money, "reason": reason }
+	return {"ok": false, "money": money, "reason": reason}

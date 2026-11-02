@@ -10,9 +10,13 @@
 [ext_resource type="Texture2D" uid="uid://csvurd8y1u8vy" path="res://assets/warehouse/warehouseBrownA.png" id="9_ir8iy"]
 [ext_resource type="Texture2D" uid="uid://du16km40rfl4w" path="res://assets/Park/gazebo.png" id="10_park"]
 [ext_resource type="Texture2D" uid="uid://cy6eb70r07cp6" path="res://assets/generated/sludge_pipe.png" id="11_sludge"]
-[ext_resource type="Texture2D" uid="uid://br13jls7dirc8" path="res://Mascot/bobr the speculator.png" id="12_bobr"]
+[ext_resource type="Texture2D" uid="uid://dsxsk4vwryf1v" path="res://Mascot/Gemini_Generated_Image_mjph2dmjph2dmjph(1)(1).png" id="12_bobr"]
 [ext_resource type="Texture2D" uid="uid://dlgki6yhwu0f7" path="res://assets/road01.png" id="13_road"]
 [ext_resource type="Texture2D" uid="uid://b6rfnyaowgeoi" path="res://assets/House/houseSmallBlueA.png" id="14_house"]
+[ext_resource type="Script" uid="uid://bbdc48qn4w0n6" path="res://scripts/ui/land_value_heatmap.gd" id="15_heatmap"]
+[ext_resource type="Texture2D" uid="uid://bd12chlkta5ue" path="res://assets/Farm/Farmhouse.png" id="16_farmhouse"]
+[ext_resource type="Script" uid="uid://cvenwyk76ikbm" path="res://scripts/ui/land_value_heatmap_legend.gd" id="16_heatmap_legend"]
+[ext_resource type="Texture2D" uid="uid://dcyhh5p2cjmtf" path="res://assets/Farm/Wheat.png" id="17_farmland"]
 
 [sub_resource type="ButtonGroup" id="ButtonGroup_z3u88"]
 
@@ -28,6 +32,9 @@ script = ExtResource("2_8mhqk")
 y_sort_enabled = true
 tile_set = ExtResource("3_3l29c")
 
+[node name="LandValueHeatmap" type="Node2D" parent="." unique_id=1000000301]
+script = ExtResource("15_heatmap")
+
 [node name="Camera2D" type="Camera2D" parent="." unique_id=699214072]
 position = Vector2(0, 100)
 script = ExtResource("4_0hol4")
@@ -41,32 +48,42 @@ offset_bottom = 72.0
 
 [node name="HBoxContainer" type="HBoxContainer" parent="UI/TopBar" unique_id=1000000102]
 layout_mode = 2
-theme_override_constants/separation = 12
+theme_override_constants/separation = 6
 
-[node name="MoneyLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=632292605]
+[node name="MoneyLabel" type="Button" parent="UI/TopBar/HBoxContainer" unique_id=632292605]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
 theme_override_font_sizes/font_size = 24
-vertical_alignment = 1
+toggle_mode = true
+flat = true
+alignment = 0
 
 [node name="WorkersLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=813389156]
+custom_minimum_size = Vector2(142, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
-theme_override_font_sizes/font_size = 24
+theme_override_font_sizes/font_size = 13
 vertical_alignment = 1
 
 [node name="GoodsLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=1680295633]
+custom_minimum_size = Vector2(205, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
-theme_override_font_sizes/font_size = 24
+theme_override_font_sizes/font_size = 13
 vertical_alignment = 1
 
 [node name="FactoriesLabel" type="Label" parent="UI/TopBar/HBoxContainer" unique_id=1390769111]
+custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
-theme_override_font_sizes/font_size = 24
+theme_override_font_sizes/font_size = 13
 vertical_alignment = 1
+
+[node name="EconomyFlowButton" type="Button" parent="UI/TopBar/HBoxContainer" unique_id=1000000601]
+custom_minimum_size = Vector2(54, 0)
+layout_mode = 2
+text = "Flow"
 
 [node name="DividendBox" type="VBoxContainer" parent="UI/TopBar/HBoxContainer" unique_id=1000000103]
 layout_mode = 2
@@ -80,6 +97,12 @@ horizontal_alignment = 1
 [node name="DividendSlider" type="HSlider" parent="UI/TopBar/HBoxContainer/DividendBox" unique_id=1000000105]
 custom_minimum_size = Vector2(200, 0)
 layout_mode = 2
+
+[node name="MapToggle" type="Button" parent="UI/TopBar/HBoxContainer" unique_id=1000000302]
+custom_minimum_size = Vector2(68, 40)
+layout_mode = 2
+toggle_mode = true
+text = "Map"
 
 [node name="CreditsButton" type="Button" parent="UI/TopBar/HBoxContainer" unique_id=1000000202]
 layout_mode = 2
@@ -157,6 +180,26 @@ texture_pressed = ExtResource("11_sludge")
 ignore_texture_size = true
 stretch_mode = 5
 
+[node name="FarmhouseToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=1000000701]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("16_farmhouse")
+texture_pressed = ExtResource("16_farmhouse")
+ignore_texture_size = true
+stretch_mode = 5
+
+[node name="FarmlandToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=1000000702]
+custom_minimum_size = Vector2(56, 56)
+layout_mode = 2
+toggle_mode = true
+button_group = SubResource("ButtonGroup_z3u88")
+texture_normal = ExtResource("17_farmland")
+texture_pressed = ExtResource("17_farmland")
+ignore_texture_size = true
+stretch_mode = 5
+
 [node name="BulldozeToggle" type="TextureButton" parent="UI/BuildBar/HBoxContainer" unique_id=1018431014]
 custom_minimum_size = Vector2(56, 56)
 layout_mode = 2
@@ -166,6 +209,11 @@ texture_normal = ExtResource("6_ewfj5")
 texture_pressed = ExtResource("5_jq64y")
 ignore_texture_size = true
 stretch_mode = 5
+
+[node name="LandValueHeatmapLegend" type="Control" parent="UI" unique_id=1000000303]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("16_heatmap_legend")
 
 [node name="BobrDialogue" type="PanelContainer" parent="UI" unique_id=706820888]
 visible = false
@@ -241,11 +289,23 @@ theme_override_constants/margin_bottom = 16
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="Title" type="Label" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=1057980054]
+[node name="Title" type="Button" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=1057980054]
+custom_minimum_size = Vector2(0, 30)
 layout_mode = 2
+tooltip_text = "Collapse or reopen tutorial objectives"
+focus_mode = 0
 theme_override_colors/font_color = Color(0.95686275, 0.85490197, 0.49411765, 1)
 theme_override_font_sizes/font_size = 20
-text = "Objectives"
+text = "Objectives  ▾"
+flat = true
+alignment = 0
+
+[node name="CompletionSummary" type="Label" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=1000000602]
+visible = false
+custom_minimum_size = Vector2(280, 0)
+layout_mode = 2
+text = "City foundations complete!"
+autowrap_mode = 3
 
 [node name="CheckResidential" type="CheckBox" parent="UI/ObjectiveBox/MarginContainer/VBoxContainer" unique_id=1908133199]
 layout_mode = 2
@@ -270,4 +330,4 @@ visible = false
 layout_mode = 2
 focus_mode = 0
 mouse_filter = 2
-text = "Connect sludge line to map edge"
+text = "Optional: connect sludge to map edge for +30% factory output"
